@@ -1,0 +1,19 @@
+{
+  "name": "notion-automation-toolkit",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Standalone notion automation toolkit for local Cursor workflows.",
+  "type": "module",
+  "bin": {
+    "notion-auto": "./bin/notion-auto.js"
+  },
+  "scripts": {
+    "notion:auto": "node ./bin/notion-auto.js",
+    "notion:start": "node ./bin/notion-auto.js start",
+    "notion:check": "node ./bin/notion-auto.js check",
+    "notion:stop": "node ./bin/notion-auto.js stop",
+    "notion:init": "node ./bin/notion-auto.js init",
+    "notion:intake": "node ./bin/notion-auto.js intake",
+    "notion:reply-latest": "node ./bin/notion-auto.js reply-latest"
+  }
+}

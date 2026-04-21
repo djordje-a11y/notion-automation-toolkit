@@ -1,0 +1,46 @@
+# Copy to target workspace as .notion.local and update values.
+
+NOTION_API_TOKEN="secret_replace_me"
+NOTION_DATABASE_ID="replace-with-database-id"
+
+# Polling bridge trigger
+NOTION_TRIGGER_STATUS="AI work in progress"
+NOTION_STATUS_PROPERTY="Status"
+NOTION_POLL_INTERVAL_SECONDS="15"
+NOTION_DEDUPE_SECONDS="120"
+NOTION_SINGLE_TICKET_MODE="true"
+
+# Optional user scoping
+# NOTION_ASSIGNEE_PROPERTY="Assignee"
+# NOTION_ASSIGNEE_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Optional routing key scoping
+# NOTION_ROUTING_KEY_PROPERTY="Cursor Owner"
+# NOTION_ROUTING_KEY="your-routing-key"
+
+NOTION_AUTOMATION_RUNTIME_FILE=".notion/runtime.json"
+NOTION_BRIDGE_STATE_FILE=".notion/bridge-state.json"
+NOTION_REQUIRE_LOCAL_IGNORES="true"
+
+NOTION_AGENT_BRANCH_PREFIX="dev/notion"
+NOTION_AGENT_BRANCH_PREFIX_RULES="bugs=fix,epics backlog=feat"
+NOTION_AGENT_BRANCH_INCLUDE_TICKET_ID="false"
+NOTION_AGENT_GIT_PREPARE_BRANCH="true"
+NOTION_AGENT_GIT_BASE_BRANCH="acceptance"
+NOTION_AGENT_GIT_REMOTE="origin"
+NOTION_AGENT_GIT_REQUIRE_CLEAN_WORKTREE="true"
+
+NOTION_AGENT_IDE_HANDOFF="true"
+NOTION_AGENT_OUTPUT_DIR=".notion/intake"
+NOTION_AGENT_HANDOFF_DIR=".notion/handoffs"
+NOTION_AGENT_HANDOFF_ALIAS_FILE="notion-handoff.md"
+NOTION_AGENT_HANDOFF_RETRIGGER_LATEST_ONLY="true"
+NOTION_AGENT_SECTION_PROPERTY="Type"
+
+NOTION_ON_MATCH_COMMAND='notion-auto intake --workspace "$PWD" --page-id "$NOTION_TRIGGER_PAGE_ID" --dispatch'
+NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PWD" "Read $NOTION_AGENT_IDE_HANDOFF_FILE and return required sections."'
+
+# Optional:
+# NOTION_AGENT_RULES_FILE="scripts/notion-ticket-agent-rules.md"
+# NOTION_AGENT_UNSET_CURSOR_API_KEY="true"
+# NOTION_AGENT_HEADLESS_PRINT="false"

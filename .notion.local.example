@@ -2,6 +2,11 @@
 
 NOTION_API_TOKEN="secret_replace_me"
 NOTION_DATABASE_ID="replace-with-database-id"
+# Optional but required for Notion databases with multiple data sources.
+# Example: collection://e519... -> use only the id part (e519...)
+# NOTION_DATA_SOURCE_ID="replace-with-data-source-id"
+# Required when using NOTION_DATA_SOURCE_ID.
+# NOTION_API_VERSION="2025-09-03"
 
 # Polling bridge trigger
 NOTION_TRIGGER_STATUS="AI work in progress"
@@ -9,10 +14,12 @@ NOTION_STATUS_PROPERTY="Status"
 NOTION_POLL_INTERVAL_SECONDS="15"
 NOTION_DEDUPE_SECONDS="120"
 NOTION_SINGLE_TICKET_MODE="true"
+NOTION_CLEANUP_ON_STATUS="true"
+NOTION_CLEANUP_STATUS="Pushed to dev"
 
 # Optional user scoping
-# NOTION_ASSIGNEE_PROPERTY="Assignee"
-# NOTION_ASSIGNEE_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+NOTION_ASSIGNEE_PROPERTY="Assignee"
+NOTION_ASSIGNEE_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 # Optional routing key scoping
 # NOTION_ROUTING_KEY_PROPERTY="Cursor Owner"
@@ -36,11 +43,17 @@ NOTION_AGENT_HANDOFF_DIR=".notion/handoffs"
 NOTION_AGENT_HANDOFF_ALIAS_FILE="notion-handoff.md"
 NOTION_AGENT_HANDOFF_RETRIGGER_LATEST_ONLY="true"
 NOTION_AGENT_SECTION_PROPERTY="Type"
+NOTION_AGENT_DOWNLOAD_ATTACHMENTS="true"
+NOTION_AGENT_ATTACHMENTS_MAX="20"
 
 NOTION_ON_MATCH_COMMAND='notion-auto intake --workspace "$PWD" --page-id "$NOTION_TRIGGER_PAGE_ID" --dispatch'
 NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PWD" "Read $NOTION_AGENT_IDE_HANDOFF_FILE and return required sections."'
 
+# Keep rules in a workspace-local, ignored path under .notion/.
+# Copy toolkit rules once:
+#   cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md .notion/agent-rules.md
+NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
+
 # Optional:
-# NOTION_AGENT_RULES_FILE="scripts/notion-ticket-agent-rules.md"
 # NOTION_AGENT_UNSET_CURSOR_API_KEY="true"
 # NOTION_AGENT_HEADLESS_PRINT="false"

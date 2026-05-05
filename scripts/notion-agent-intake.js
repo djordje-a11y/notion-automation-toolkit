@@ -68,6 +68,8 @@ const DEFAULT_AGENT_HEADLESS_PRINT = true;
 const DEFAULT_IDE_HANDOFF = true;
 const DEFAULT_LOCAL_ENV_FILES = ['.notion.local', '.env.local', 'scripts/.notion.local'];
 const DEFAULT_SECTION_PROPERTY = 'Type';
+const DEFAULT_DOWNLOAD_ATTACHMENTS = true;
+const DEFAULT_ATTACHMENTS_MAX = 20;
 
 const DEFAULT_RULES = [
   'Ticket intake rules:',
@@ -75,14 +77,16 @@ const DEFAULT_RULES = [
   '- Preserve security constraints and account isolation (no access widening fixes).',
   '- Keep scope minimal and explicit; call out behavior changes separately.',
   '- Include deterministic validation plan (targeted tests first, then confidence checks).',
+  '- After reading the handoff `.md` and confirming the prepared branch, rename chat to the branch name without configured prefix.',
   '- Output must include: ticket understanding, proposed branch name, solution approach, risks/blockers.',
   '',
   'Completion and handoff rules (mandatory when user asks to commit):',
+  '- Do not hardcode personal names/emails in shared rules or ticket comments.',
   '- Use custom signing/author commit command only when user explicitly asks for it.',
   '- If user does not explicitly request custom signing/author, use normal commit flow (`git commit -m "<message>"`).',
   '- Write a meaningful commit message: fix|feat|chore subject + user-visible outcome + why (avoid vague messages).',
   '- Staged-first workflow: user stages reviewed files and tells agent changes are staged.',
-  '- On "staged push" (or equivalent): verify staged diff is non-empty, commit staged files only, push branch, post Notion update via `notion-auto reply-latest --workspace "$PWD" --page-id "<page-id>" --body-file "<reply-file.md>"`.',
+  '- On "staged push" (or equivalent): verify staged diff is non-empty, commit staged files only, push branch, then post Notion update and set status via `notion-auto reply-latest --workspace "$PWD" --page-id "<page-id>" --body-file "<reply-file.md>" --set-status "AI fix ready"`.',
 ].join('\n');
 
 const colors = {
@@ -339,6 +343,8 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_HEADLESS_PRINT',
     'NOTION_AGENT_IDE_HANDOFF',
     'NOTION_AGENT_SECTION_PROPERTY',
+    'NOTION_AGENT_DOWNLOAD_ATTACHMENTS',
+    'NOTION_AGENT_ATTACHMENTS_MAX',
   ];
 
   const values = {};
@@ -539,6 +545,26 @@ function buildRuntimeConfig(args, envValues) {
       ),
       DEFAULT_IDE_HANDOFF,
     ),
+    downloadAttachments: parseBoolean(
+      getOptionalArg(
+        args,
+        'download-attachments',
+        process.env.NOTION_AGENT_DOWNLOAD_ATTACHMENTS ||
+          envValues.NOTION_AGENT_DOWNLOAD_ATTACHMENTS ||
+          String(DEFAULT_DOWNLOAD_ATTACHMENTS),
+      ),
+      DEFAULT_DOWNLOAD_ATTACHMENTS,
+    ),
+    attachmentsMax: parseInteger(
+      getOptionalArg(
+        args,
+        'attachments-max',
+        process.env.NOTION_AGENT_ATTACHMENTS_MAX ||
+          envValues.NOTION_AGENT_ATTACHMENTS_MAX ||
+          String(DEFAULT_ATTACHMENTS_MAX),
+      ),
+      DEFAULT_ATTACHMENTS_MAX,
+    ),
     sectionPropertyName: String(
       process.env.NOTION_AGENT_SECTION_PROPERTY ||
         envValues.NOTION_AGENT_SECTION_PROPERTY ||
@@ -680,25 +706,252 @@ function normalizePropertySnapshot(properties) {
   return rows;
 }
 
+function buildAssetRecord({
+  source,
+  blockId = '',
+  propertyName = '',
+  kind = 'file',
+  name = '',
+  url = '',
+  expiryTime = '',
+}) {
+  const normalizedUrl = String(url || '').trim();
+  if (!normalizedUrl) return null;
+  return {
+    source: String(source || ''),
+    blockId: String(blockId || ''),
+    propertyName: String(propertyName || ''),
+    kind: String(kind || 'file'),
+    name: String(name || '').trim() || String(kind || 'file'),
+    url: normalizedUrl,
+    expiryTime: String(expiryTime || '').trim(),
+    localPath: '',
+    downloadError: '',
+  };
+}
+
+function extractAssetFromPayload({ source, blockId = '', propertyName = '', blockType = '', payload }) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const externalUrl = String(p?.external?.url || '').trim();
+  const fileUrl = String(p?.file?.url || '').trim();
+  const expiry = String(p?.file?.expiry_time || '').trim();
+  const directUrl = String(p?.url || '').trim();
+  const rawName = String(p?.name || plainTextFromRichText(p?.caption) || blockType || 'asset').trim();
+  return buildAssetRecord({
+    source,
+    blockId,
+    propertyName,
+    kind: blockType || p?.type || 'file',
+    name: rawName,
+    url: externalUrl || fileUrl || directUrl,
+    expiryTime: expiry,
+  });
+}
+
 function extractFilesFromBlock(block) {
   if (!block || typeof block !== 'object') return [];
-  const files = [];
   const type = String(block.type || '').trim();
-  const typePayload = block[type];
-  if (type === 'file' && typePayload) {
-    const externalUrl = String(typePayload?.external?.url || '').trim();
-    const fileUrl = String(typePayload?.file?.url || '').trim();
-    const expiry = String(typePayload?.file?.expiry_time || '').trim();
-    const name = String(typePayload?.caption?.[0]?.plain_text || typePayload?.name || 'file').trim();
-    files.push({
-      blockId: String(block.id || ''),
-      name,
-      url: externalUrl || fileUrl,
-      expiryTime: expiry,
-      kind: typePayload?.type || 'file',
-    });
+  if (!type) return [];
+  const payload = block[type];
+  const extractableTypes = new Set([
+    'file',
+    'image',
+    'video',
+    'pdf',
+    'audio',
+    'bookmark',
+    'embed',
+    'link_preview',
+  ]);
+  if (!extractableTypes.has(type) || !payload || typeof payload !== 'object') return [];
+  const asset = extractAssetFromPayload({
+    source: 'block',
+    blockId: String(block.id || ''),
+    blockType: type,
+    payload,
+  });
+  return asset ? [asset] : [];
+}
+
+function extractFilesFromProperties(page) {
+  const source = page?.properties && typeof page.properties === 'object' ? page.properties : {};
+  const files = [];
+  for (const [propertyName, property] of Object.entries(source)) {
+    if (String(property?.type || '').trim() !== 'files') continue;
+    const entries = Array.isArray(property?.files) ? property.files : [];
+    for (const entry of entries) {
+      const asset = extractAssetFromPayload({
+        source: 'property',
+        propertyName,
+        blockType: String(entry?.type || 'file'),
+        payload: entry,
+      });
+      if (!asset) continue;
+      files.push(asset);
+    }
   }
   return files;
+}
+
+function dedupeAssets(assets) {
+  const out = [];
+  const seen = new Set();
+  for (const asset of Array.isArray(assets) ? assets : []) {
+    const url = String(asset?.url || '').trim();
+    if (!url) continue;
+    const key = `${url}|${String(asset?.name || '').trim()}|${String(asset?.source || '').trim()}|${String(asset?.propertyName || '').trim()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(asset);
+  }
+  return out;
+}
+
+function normalizeBlockText(value, maxLen = 900) {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1).trimEnd()}…`;
+}
+
+function blockToBodyLine(block) {
+  if (!block || typeof block !== 'object') return '';
+  const type = String(block.type || '').trim();
+  if (!type) return '';
+
+  const payload = block[type] && typeof block[type] === 'object' ? block[type] : {};
+  const richText = plainTextFromRichText(payload.rich_text);
+  const text = normalizeBlockText(richText);
+
+  if (type === 'heading_1') return text ? `# ${text}` : '';
+  if (type === 'heading_2') return text ? `## ${text}` : '';
+  if (type === 'heading_3') return text ? `### ${text}` : '';
+  if (type === 'paragraph') return text;
+  if (type === 'bulleted_list_item') return text ? `- ${text}` : '';
+  if (type === 'numbered_list_item') return text ? `1. ${text}` : '';
+  if (type === 'to_do') {
+    if (!text) return '';
+    const marker = payload.checked ? 'x' : ' ';
+    return `- [${marker}] ${text}`;
+  }
+  if (type === 'quote') return text ? `> ${text}` : '';
+  if (type === 'callout') return text ? `! ${text}` : '';
+  if (type === 'toggle') return text ? `Toggle: ${text}` : '';
+  if (type === 'code') {
+    const language = normalizeBlockText(payload.language || '');
+    if (!text) return '';
+    return `Code${language ? ` (${language})` : ''}: ${text}`;
+  }
+  if (type === 'child_page') {
+    const title = normalizeBlockText(payload.title || '');
+    return title ? `Child page: ${title}` : '';
+  }
+  if (type === 'bookmark' || type === 'embed' || type === 'link_preview') {
+    const url = normalizeBlockText(payload.url || '');
+    return url ? `Link: ${url}` : '';
+  }
+  if (type === 'table_of_contents') return '(Table of contents)';
+  if (type === 'divider') return '---';
+
+  return text;
+}
+
+function extractBodyLinesFromBlocks(blocks) {
+  const source = Array.isArray(blocks) ? blocks : [];
+  const lines = [];
+  for (const block of source) {
+    const line = blockToBodyLine(block);
+    if (!line) continue;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function isHttpUrl(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw.startsWith('http://') || raw.startsWith('https://');
+}
+
+function sanitizeFilename(value, fallback = 'asset') {
+  const raw = String(value || '').trim();
+  const source = raw || fallback;
+  const cleaned = source
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
+function extensionFromUrl(urlValue) {
+  try {
+    const parsed = new URL(String(urlValue || ''));
+    const ext = path.extname(parsed.pathname || '').trim();
+    if (!ext) return '';
+    if (ext.length > 10) return '';
+    return ext;
+  } catch {
+    return '';
+  }
+}
+
+function isDownloadableAssetKind(kind) {
+  const normalized = normalize(kind);
+  return ['file', 'image', 'video', 'pdf', 'audio'].includes(normalized);
+}
+
+async function downloadAssets(config, assets) {
+  if (!config.downloadAttachments) return assets;
+  const list = Array.isArray(assets) ? assets : [];
+  if (list.length === 0) return list;
+
+  const outputDir = path.isAbsolute(config.outputDir)
+    ? config.outputDir
+    : path.resolve(process.cwd(), config.outputDir);
+  const assetsDir = path.join(outputDir, 'assets', sanitizeFilename(config.pageId, 'ticket'));
+  await fs.mkdir(assetsDir, { recursive: true });
+
+  const maxCount = Math.max(0, Number(config.attachmentsMax || DEFAULT_ATTACHMENTS_MAX));
+  let downloaded = 0;
+  const usedNames = new Set();
+
+  for (const asset of list) {
+    if (downloaded >= maxCount) break;
+    const kind = String(asset?.kind || '').trim();
+    if (!isDownloadableAssetKind(kind)) continue;
+    const url = String(asset?.url || '').trim();
+    if (!isHttpUrl(url)) continue;
+
+    const ext = path.extname(String(asset?.name || '')) || extensionFromUrl(url);
+    const base = sanitizeFilename(asset?.name || `${kind}-${downloaded + 1}`, `asset-${downloaded + 1}`);
+    let filename = ext ? `${base}${ext}` : base;
+    let dedupeIndex = 2;
+    while (usedNames.has(filename.toLowerCase())) {
+      filename = ext ? `${base}-${dedupeIndex}${ext}` : `${base}-${dedupeIndex}`;
+      dedupeIndex += 1;
+    }
+    usedNames.add(filename.toLowerCase());
+
+    const targetPath = path.join(assetsDir, filename);
+    try {
+      const response = await fetch(url, { method: 'GET' });
+      if (!response.ok) {
+        asset.downloadError = `HTTP ${response.status}`;
+        continue;
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      await fs.writeFile(targetPath, bytes);
+      asset.localPath = resolveRepoRelativePath(targetPath);
+      downloaded += 1;
+    } catch (error) {
+      asset.downloadError = String(error?.message || error || 'download failed');
+    }
+  }
+
+  return list;
 }
 
 function normalizeComment(comment) {
@@ -728,12 +981,18 @@ async function getPageDetails(config) {
 
   const comments = (Array.isArray(commentsPayload?.results) ? commentsPayload.results : []).map(normalizeComment);
   const blocks = Array.isArray(blocksPayload?.results) ? blocksPayload.results : [];
-  const files = blocks.flatMap((block) => extractFilesFromBlock(block));
+  const blockFiles = blocks.flatMap((block) => extractFilesFromBlock(block));
+  const propertyFiles = extractFilesFromProperties(page);
+  const files = dedupeAssets([...blockFiles, ...propertyFiles]);
+  await downloadAssets(config, files);
+  const bodyLines = extractBodyLinesFromBlocks(blocks);
 
   return {
     page,
     comments,
     files,
+    bodyLines,
+    bodyText: bodyLines.join('\n').trim(),
     blocksCount: blocks.length,
   };
 }
@@ -764,8 +1023,6 @@ function buildIdeHandoffBody({ branchLabel, relativeHandoffPath, archiveHandoffP
       : '';
   return [
     '# Cursor IDE Agent — Notion handoff',
-    '',
-    'Use **Agent** in the Cursor IDE (sidebar), start a chat, and attach this file with `@` using the path below.',
     '',
     `- **Git branch:** \`${branchLabel}\``,
     `- **This file (repo-relative):** \`${relativeHandoffPath}\``,
@@ -1248,6 +1505,7 @@ async function readRulesText(rulesFile) {
 
 function buildPrompt({ page, pageSnapshot, branchCandidate, rulesText, sectionContext, resolvedPrefix, gitPreparation }) {
   const comments = Array.isArray(pageSnapshot.comments) ? pageSnapshot.comments : [];
+  const ticketBodyLines = (pageSnapshot.bodyLines || []).slice(0, 140);
   const latestCommentLines = comments.slice(0, 8).map((comment, index) => {
     const creator = String(comment?.createdBy || '').trim() || 'unknown';
     const created = String(comment?.createdAt || '').trim() || 'unknown-time';
@@ -1258,12 +1516,13 @@ function buildPrompt({ page, pageSnapshot, branchCandidate, rulesText, sectionCo
   const fileLines = (pageSnapshot.files || []).slice(0, 15).map((asset, index) => {
     const name = String(asset?.name || '').trim() || `file-${index + 1}`;
     const url = String(asset?.url || '').trim();
-    return `${index + 1}. ${name}${url ? ` -> ${url}` : ''}`;
-  });
-
-  const propertyLines = (pageSnapshot.propertyRows || []).slice(0, 25).map((row) => {
-    const value = String(row?.value || '').trim() || '(empty)';
-    return `- ${row?.name} [${row?.type}]: ${value}`;
+    const kind = String(asset?.kind || '').trim() || 'asset';
+    const source = String(asset?.source || '').trim() || 'unknown';
+    const propertyName = String(asset?.propertyName || '').trim();
+    const localPath = String(asset?.localPath || '').trim();
+    const downloadError = String(asset?.downloadError || '').trim();
+    const sourceLabel = source === 'property' && propertyName ? `${source}:${propertyName}` : source;
+    return `${index + 1}. [${kind}] ${name}${url ? ` -> ${url}` : ''}${localPath ? ` (local: ${localPath})` : ''}${downloadError ? ` (download failed: ${downloadError})` : ''} [source=${sourceLabel}]`;
   });
 
   return [
@@ -1285,13 +1544,13 @@ function buildPrompt({ page, pageSnapshot, branchCandidate, rulesText, sectionCo
     `- Git Base Remote: ${gitPreparation?.remote || '(not prepared)'}`,
     `- Git Prepared Head: ${gitPreparation?.headSha || '(not prepared)'}`,
     '',
-    '## Property Snapshot',
-    ...(propertyLines.length > 0 ? propertyLines : ['(No page properties found)']),
+    '## Ticket Body (from page blocks)',
+    ...(ticketBodyLines.length > 0 ? ticketBodyLines : ['(No ticket body text extracted from page blocks)']),
     '',
     '## Latest Comments',
     ...(latestCommentLines.length > 0 ? latestCommentLines : ['(No comments found)']),
     '',
-    '## Attached Files (first-level blocks)',
+    '## Attached Files',
     ...(fileLines.length > 0 ? fileLines : ['(No files found)']),
     '',
     '## Mandatory Rules',
@@ -1344,6 +1603,8 @@ function buildContextObject({
     gitPreparation: gitPreparation || null,
     rules: rulesText,
     properties: pageSnapshot.propertyRows || [],
+    ticketBodyLines: pageSnapshot.bodyLines || [],
+    ticketBodyText: String(pageSnapshot.bodyText || ''),
     comments: pageSnapshot.comments || [],
     files: pageSnapshot.files || [],
     blocksCount: Number(pageSnapshot.blocksCount || 0),
@@ -1545,6 +1806,8 @@ function printUsage() {
   print('  --unset-cursor-api-key true|false');
   print('  --agent-headless-print true|false');
   print('  --ide-handoff true|false');
+  print(`  --download-attachments true|false (default ${String(DEFAULT_DOWNLOAD_ATTACHMENTS)})`);
+  print(`  --attachments-max <n> (default ${String(DEFAULT_ATTACHMENTS_MAX)})`);
   print('  --dispatch');
   print('  --agent-command "<shell command>"');
   print('  --env-file <path>');

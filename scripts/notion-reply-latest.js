@@ -16,6 +16,7 @@ const DEFAULT_API_VERSION = '2022-06-28';
 const DEFAULT_LOCAL_ENV_FILES = ['.notion.local', '.env.local', 'scripts/.notion.local'];
 const DEFAULT_COMMENTS_LIMIT = 100;
 const MAX_RICH_TEXT_SEGMENT = 1900;
+const DEFAULT_STATUS_PROPERTY = 'Status';
 
 const colors = {
   reset: '\x1b[0m',
@@ -173,7 +174,7 @@ function resolveEnvFileCandidates(args) {
 
 async function loadNotionEnvValues(args) {
   const candidates = resolveEnvFileCandidates(args);
-  const keys = ['NOTION_API_TOKEN', 'NOTION_API_URL', 'NOTION_API_VERSION'];
+  const keys = ['NOTION_API_TOKEN', 'NOTION_API_URL', 'NOTION_API_VERSION', 'NOTION_STATUS_PROPERTY'];
   const values = {};
   let source = '';
 
@@ -308,6 +309,62 @@ async function createReplyOrComment(config, latestComment) {
   };
 }
 
+function findPropertyByName(properties, name) {
+  if (!properties || typeof properties !== 'object') return null;
+  const target = String(name || '').trim().toLowerCase();
+  if (!target) return null;
+  for (const [propertyName, propertyValue] of Object.entries(properties)) {
+    if (String(propertyName || '').trim().toLowerCase() !== target) continue;
+    return propertyValue || null;
+  }
+  return null;
+}
+
+async function updatePageStatus(config) {
+  const targetStatus = String(config.setStatus || '').trim();
+  if (!targetStatus) return { updated: false };
+
+  const page = await notionRequest(config, `/pages/${encodeURIComponent(config.pageId)}`, {
+    method: 'GET',
+  });
+  const properties = page?.properties || {};
+  const statusProperty = findPropertyByName(properties, config.statusPropertyName);
+  if (!statusProperty) {
+    fail(
+      `Status property "${config.statusPropertyName}" not found on page. ` +
+        'Set --status-property to the correct Notion property name.',
+    );
+  }
+
+  const type = String(statusProperty?.type || '').trim();
+  let payload = null;
+  if (type === 'status') {
+    payload = { status: { name: targetStatus } };
+  } else if (type === 'select') {
+    payload = { select: { name: targetStatus } };
+  } else {
+    fail(
+      `Property "${config.statusPropertyName}" has unsupported type "${type}". ` +
+        'Supported types: status, select.',
+    );
+  }
+
+  await notionRequest(config, `/pages/${encodeURIComponent(config.pageId)}`, {
+    method: 'PATCH',
+    body: {
+      properties: {
+        [config.statusPropertyName]: payload,
+      },
+    },
+  });
+
+  return {
+    updated: true,
+    statusPropertyName: config.statusPropertyName,
+    statusValue: targetStatus,
+  };
+}
+
 async function readBody(args) {
   const direct = getOptionalArg(args, 'body');
   if (direct) return direct;
@@ -331,12 +388,17 @@ function printUsage() {
   print('Usage:');
   print('  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body "<text>"');
   print('  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body-file ./reply.md');
+  print(
+    '  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body-file ./reply.md --set-status "AI fix ready"',
+  );
   print('');
   print('Options:');
   print('  --workspace <path>');
   print('  --page-id <id> (required)');
   print('  --body "<markdown>"');
   print('  --body-file <path>');
+  print('  --set-status "<value>" (optional: update page status/select property after comment)');
+  print(`  --status-property "<name>" (default ${DEFAULT_STATUS_PROPERTY})`);
   print(`  --max-comments <n> (default ${DEFAULT_COMMENTS_LIMIT})`);
   print('  --dry-run true|false');
   print('  --json true|false');
@@ -377,6 +439,12 @@ async function main(argv = process.argv) {
     ).trim(),
     pageId: getRequiredArg(args, 'page-id', '--page-id'),
     body: await readBody(args),
+    setStatus: getOptionalArg(args, 'set-status'),
+    statusPropertyName: getOptionalArg(
+      args,
+      'status-property',
+      process.env.NOTION_STATUS_PROPERTY || loadedEnv.values.NOTION_STATUS_PROPERTY || DEFAULT_STATUS_PROPERTY,
+    ),
     maxComments: parseInteger(
       getOptionalArg(args, 'max-comments', String(DEFAULT_COMMENTS_LIMIT)),
       DEFAULT_COMMENTS_LIMIT,
@@ -401,6 +469,12 @@ async function main(argv = process.argv) {
       mode,
       parentDiscussionId,
       createdCommentId: null,
+      statusUpdate: config.setStatus
+        ? {
+            statusPropertyName: config.statusPropertyName,
+            statusValue: config.setStatus,
+          }
+        : null,
     };
     if (config.json) {
       // eslint-disable-next-line no-console
@@ -419,11 +493,19 @@ async function main(argv = process.argv) {
     fail('Notion did not return comment id');
   }
 
+  const statusResult = await updatePageStatus(config);
+
   const output = {
     pageId: String(config.pageId),
     mode: created.mode,
     parentDiscussionId: created.discussionId,
     createdCommentId: created.createdCommentId,
+    statusUpdate: statusResult.updated
+      ? {
+          statusPropertyName: statusResult.statusPropertyName,
+          statusValue: statusResult.statusValue,
+        }
+      : null,
   };
 
   if (config.json) {
@@ -434,6 +516,12 @@ async function main(argv = process.argv) {
     print(`parent_discussion_id=${output.parentDiscussionId || 'none'}`, colors.green);
     print(`new_comment_id=${output.createdCommentId}`, colors.green);
     print(`mode=${output.mode}`, colors.green);
+    if (output.statusUpdate) {
+      print(
+        `status_updated=${output.statusUpdate.statusPropertyName}:${output.statusUpdate.statusValue}`,
+        colors.green,
+      );
+    }
   }
 
   return 0;

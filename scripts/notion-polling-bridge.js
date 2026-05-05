@@ -59,6 +59,9 @@ const DEFAULT_DEDUPE_SECONDS = 120;
 const DEFAULT_SINGLE_TICKET_MODE = true;
 const DEFAULT_STATE_FILE = '.notion/bridge-state.json';
 const DEFAULT_INITIAL_LOOKBACK_SECONDS = 0;
+const DEFAULT_AGENT_OUTPUT_DIR = '.notion/intake';
+const DEFAULT_CLEANUP_ON_STATUS = true;
+const DEFAULT_CLEANUP_STATUS = 'Pushed to dev';
 const DEFAULT_ON_MATCH_COMMAND = `node "${path.resolve(
   TOOLKIT_ROOT,
   'scripts/notion-agent-intake.js',
@@ -74,6 +77,7 @@ const colors = {
 };
 
 const dedupeMap = new Map();
+const cleanupSeenEvents = new Set();
 let dispatchChain = Promise.resolve();
 let dispatchQueueDepth = 0;
 let dispatchInFlight = false;
@@ -213,6 +217,7 @@ async function loadNotionEnvValues(args) {
     'NOTION_API_URL',
     'NOTION_API_VERSION',
     'NOTION_DATABASE_ID',
+    'NOTION_DATA_SOURCE_ID',
     'NOTION_TRIGGER_STATUS',
     'NOTION_STATUS_PROPERTY',
     'NOTION_ASSIGNEE_PROPERTY',
@@ -227,6 +232,9 @@ async function loadNotionEnvValues(args) {
     'NOTION_BRIDGE_DRY_RUN',
     'NOTION_BRIDGE_STATE_FILE',
     'NOTION_BRIDGE_INITIAL_LOOKBACK_SECONDS',
+    'NOTION_AGENT_OUTPUT_DIR',
+    'NOTION_CLEANUP_ON_STATUS',
+    'NOTION_CLEANUP_STATUS',
     'NOTION_ENV_FILE',
   ];
 
@@ -283,6 +291,11 @@ function buildRuntimeConfig(args, envValues) {
   if (!databaseId) {
     fail('NOTION_DATABASE_ID is required.');
   }
+  const dataSourceId = String(
+    process.env.NOTION_DATA_SOURCE_ID ||
+      envValues.NOTION_DATA_SOURCE_ID ||
+      getOptionalArg(args, 'data-source-id'),
+  ).trim();
 
   const stateFileRaw = getOptionalArg(
     args,
@@ -301,6 +314,14 @@ function buildRuntimeConfig(args, envValues) {
   if (!triggerStatus) {
     fail('NOTION_TRIGGER_STATUS must not be empty.');
   }
+  const outputDirRaw = getOptionalArg(
+    args,
+    'output-dir',
+    process.env.NOTION_AGENT_OUTPUT_DIR || envValues.NOTION_AGENT_OUTPUT_DIR || DEFAULT_AGENT_OUTPUT_DIR,
+  );
+  const outputDir = path.isAbsolute(outputDirRaw)
+    ? outputDirRaw
+    : path.resolve(process.cwd(), outputDirRaw);
 
   return {
     token,
@@ -309,6 +330,7 @@ function buildRuntimeConfig(args, envValues) {
       process.env.NOTION_API_VERSION || envValues.NOTION_API_VERSION || DEFAULT_API_VERSION,
     ).trim(),
     databaseId,
+    dataSourceId,
     triggerStatus,
     statusPropertyName: String(
       process.env.NOTION_STATUS_PROPERTY ||
@@ -418,6 +440,24 @@ function buildRuntimeConfig(args, envValues) {
       ),
       false,
     ),
+    outputDir,
+    cleanupOnStatus: parseBoolean(
+      getOptionalArg(
+        args,
+        'cleanup-on-status',
+        process.env.NOTION_CLEANUP_ON_STATUS ||
+          envValues.NOTION_CLEANUP_ON_STATUS ||
+          String(DEFAULT_CLEANUP_ON_STATUS),
+      ),
+      DEFAULT_CLEANUP_ON_STATUS,
+    ),
+    cleanupStatus: String(
+      getOptionalArg(
+        args,
+        'cleanup-status',
+        process.env.NOTION_CLEANUP_STATUS || envValues.NOTION_CLEANUP_STATUS || DEFAULT_CLEANUP_STATUS,
+      ),
+    ).trim(),
   };
 }
 
@@ -599,9 +639,27 @@ async function notionRequest(config, endpointPath, { method = 'GET', body = null
   return payload || {};
 }
 
+function resolveQueryTarget(config) {
+  const dataSourceId = String(config.dataSourceId || '').trim();
+  if (dataSourceId) {
+    return {
+      endpoint: `/data_sources/${dataSourceId}/query`,
+      id: dataSourceId,
+      type: 'data_source',
+    };
+  }
+
+  return {
+    endpoint: `/databases/${config.databaseId}/query`,
+    id: String(config.databaseId || ''),
+    type: 'database',
+  };
+}
+
 async function queryDatabaseSince(config, cursorIso) {
   const pages = [];
   let nextCursor = '';
+  const target = resolveQueryTarget(config);
 
   do {
     const body = {
@@ -619,7 +677,7 @@ async function queryDatabaseSince(config, cursorIso) {
     }
     if (nextCursor) body.start_cursor = nextCursor;
 
-    const data = await notionRequest(config, `/databases/${config.databaseId}/query`, {
+    const data = await notionRequest(config, target.endpoint, {
       method: 'POST',
       body,
     });
@@ -648,6 +706,37 @@ async function queryDatabaseSince(config, cursorIso) {
 
 function buildDedupeKey(pageId, editedAt, statusText) {
   return [String(pageId || ''), String(editedAt || ''), String(statusText || '')].join('|');
+}
+
+async function cleanupTicketIntakeArtifacts(config, pageId) {
+  const id = String(pageId || '').trim();
+  if (!id) return { removedFiles: 0, removedAssetDir: false };
+
+  let removedFiles = 0;
+  let removedAssetDir = false;
+  const outputDir = path.resolve(config.outputDir);
+  try {
+    const entries = await fs.readdir(outputDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const name = String(entry.name || '');
+      if (!name.startsWith(`${id}-`)) continue;
+      await fs.rm(path.join(outputDir, name), { force: true });
+      removedFiles += 1;
+    }
+  } catch {
+    // ignore when output directory doesn't exist yet
+  }
+
+  const assetsDir = path.join(outputDir, 'assets', id);
+  try {
+    await fs.rm(assetsDir, { recursive: true, force: true });
+    removedAssetDir = true;
+  } catch {
+    removedAssetDir = false;
+  }
+
+  return { removedFiles, removedAssetDir };
 }
 
 function shouldSkipAsDuplicate(key, dedupeWindowMs) {
@@ -725,6 +814,7 @@ function executeOnMatchCommand(config, context) {
     NOTION_TRIGGER_PAGE_ID: String(context.page.id || ''),
     NOTION_TRIGGER_PAGE_TITLE: String(context.pageTitle || ''),
     NOTION_TRIGGER_DATABASE_ID: String(config.databaseId || ''),
+    NOTION_TRIGGER_DATA_SOURCE_ID: String(config.dataSourceId || ''),
     NOTION_TRIGGER_STATUS: String(context.statusText || ''),
     NOTION_TRIGGER_PAGE_EDITED_AT: String(context.editedAt || ''),
   };
@@ -804,6 +894,7 @@ function printUsage() {
   print('  --workspace <path>');
   print('  --env-file <path>');
   print('  --database-id <id>');
+  print('  --data-source-id <id>');
   print('  --trigger-status "<label>"');
   print('  --status-property "<name>"');
   print('  --assignee-property "<name>"');
@@ -817,6 +908,9 @@ function printUsage() {
   print('  --single-ticket-mode true|false');
   print('  --state-file .notion/bridge-state.json');
   print('  --initial-lookback-seconds 0');
+  print('  --output-dir .notion/intake');
+  print('  --cleanup-on-status true|false');
+  print('  --cleanup-status "Pushed to dev"');
   print('  --dry-run true|false');
   print('');
 }
@@ -834,6 +928,7 @@ async function runPollingLoop(config) {
       lastError: null,
       running: true,
       databaseId: config.databaseId,
+      dataSourceId: config.dataSourceId || null,
       triggerStatus: config.triggerStatus,
     });
     print(`Initialized polling cursor at ${cursorIso}`, colors.dim);
@@ -855,6 +950,25 @@ async function runPollingLoop(config) {
         const pageId = String(page?.id || '').trim();
         const editedAt = String(page?.last_edited_time || '').trim();
         if (isIsoAfter(editedAt, nextCursorIso)) nextCursorIso = editedAt;
+        const statusText = resolveStatusText(page, config.statusPropertyName);
+        const pageTitle = resolvePageTitle(page);
+
+        if (config.cleanupOnStatus && config.cleanupStatus) {
+          const isCleanupStatus = normalize(statusText) === normalize(config.cleanupStatus);
+          if (isCleanupStatus) {
+            const cleanupKey = `cleanup|${pageId}|${editedAt}|${normalize(statusText)}`;
+            if (!cleanupSeenEvents.has(cleanupKey)) {
+              cleanupSeenEvents.add(cleanupKey);
+              const cleanupResult = await cleanupTicketIntakeArtifacts(config, pageId);
+              if (cleanupResult.removedFiles > 0 || cleanupResult.removedAssetDir) {
+                print(
+                  `Cleanup for page ${pageId} (${pageTitle}): removed prompt/context files=${cleanupResult.removedFiles}, assets=${cleanupResult.removedAssetDir ? 'yes' : 'no'}.`,
+                  colors.dim,
+                );
+              }
+            }
+          }
+        }
 
         const filterResult = evaluateFilters({ config, page });
         if (!filterResult.matched) {
@@ -864,9 +978,8 @@ async function runPollingLoop(config) {
           }
           continue;
         }
-
-        const statusText = String(filterResult.metadata?.status || '').trim();
-        const pageTitle = String(filterResult.metadata?.title || pageId).trim();
+        const matchedStatusText = String(filterResult.metadata?.status || statusText).trim();
+        const matchedPageTitle = String(filterResult.metadata?.title || pageTitle || pageId).trim();
         const dedupeKey = buildDedupeKey(pageId, editedAt, statusText);
         if (shouldSkipAsDuplicate(dedupeKey, config.dedupeWindowMs)) {
           ignoredCount += 1;
@@ -876,18 +989,18 @@ async function runPollingLoop(config) {
 
         const queueResult = queueCommandExecution(config, {
           page,
-          statusText,
-          pageTitle,
+          statusText: matchedStatusText,
+          pageTitle: matchedPageTitle,
           editedAt,
         });
         if (!queueResult.queued) {
           ignoredCount += 1;
-          print(`Ignored page ${pageId} (${pageTitle}): ${queueResult.reason}`, colors.yellow);
+          print(`Ignored page ${pageId} (${matchedPageTitle}): ${queueResult.reason}`, colors.yellow);
           continue;
         }
 
         matchedCount += 1;
-        print(`Matched page ${pageId} (${pageTitle}) -> dispatching local command.`, colors.green);
+        print(`Matched page ${pageId} (${matchedPageTitle}) -> dispatching local command.`, colors.green);
       }
 
       cursorIso = nextCursorIso;
@@ -899,6 +1012,7 @@ async function runPollingLoop(config) {
         lastError: null,
         running: true,
         databaseId: config.databaseId,
+        dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
         stats: {
           polledCount,
@@ -915,6 +1029,22 @@ async function runPollingLoop(config) {
     } catch (error) {
       lastError = String(error?.message || error || 'Unknown polling error');
       print(`Polling error: ${lastError}`, colors.red);
+      if (
+        !config.dataSourceId &&
+        normalize(lastError).includes('multiple data sources are not supported')
+      ) {
+        print(
+          'Hint: set NOTION_DATA_SOURCE_ID in .notion.local (example: collection://... id without the "collection://" prefix) and set NOTION_API_VERSION="2025-09-03".',
+          colors.yellow,
+        );
+      }
+      if (
+        config.dataSourceId &&
+        normalize(lastError).includes('invalid request url') &&
+        normalize(config.apiVersion) !== '2025-09-03'
+      ) {
+        print('Hint: NOTION_DATA_SOURCE_ID requires NOTION_API_VERSION="2025-09-03".', colors.yellow);
+      }
       await writeStateFile(config.stateFile, {
         startedAt: String(state?.startedAt || new Date().toISOString()),
         pid: process.pid,
@@ -923,6 +1053,7 @@ async function runPollingLoop(config) {
         lastError,
         running: true,
         databaseId: config.databaseId,
+        dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
       });
     }
@@ -939,6 +1070,7 @@ async function runPollingLoop(config) {
     lastError: null,
     running: false,
     databaseId: config.databaseId,
+    dataSourceId: config.dataSourceId || null,
     triggerStatus: config.triggerStatus,
   });
 }
@@ -960,6 +1092,9 @@ async function main(argv = process.argv) {
   }
   print(`api: ${config.apiUrl} (version ${config.apiVersion})`, colors.dim);
   print(`database: ${config.databaseId}`, colors.dim);
+  if (config.dataSourceId) {
+    print(`data source: ${config.dataSourceId}`, colors.dim);
+  }
   print(`trigger status: ${config.triggerStatus} (property: ${config.statusPropertyName})`, colors.dim);
   if (config.assigneeIds.size > 0) {
     print(
@@ -978,6 +1113,10 @@ async function main(argv = process.argv) {
   print(`single-ticket mode: ${config.singleTicketMode ? 'ENABLED' : 'DISABLED'}`, colors.dim);
   print(
     `poll interval: ${Math.round(config.pollIntervalMs / 1000)}s page-size=${config.pageSize} dedupe=${Math.round(config.dedupeWindowMs / 1000)}s`,
+    colors.dim,
+  );
+  print(
+    `cleanup: ${config.cleanupOnStatus ? `enabled on status '${config.cleanupStatus || '(empty)'}'` : 'disabled'} (output dir: ${config.outputDir})`,
     colors.dim,
   );
   print(`state file: ${config.stateFile}`, colors.dim);

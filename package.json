@@ -14,6 +14,7 @@
     "notion:stop": "node ./bin/notion-auto.js stop",
     "notion:init": "node ./bin/notion-auto.js init",
     "notion:intake": "node ./bin/notion-auto.js intake",
-    "notion:reply-latest": "node ./bin/notion-auto.js reply-latest"
+    "notion:reply-latest": "node ./bin/notion-auto.js reply-latest",
+    "notion:mcp-handoff": "bash ./scripts/notion-mcp-handoff.sh"
   }
 }

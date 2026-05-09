@@ -27,7 +27,9 @@ This creates friction, inconsistency, and avoidable delays.
 - Ticket context packaging (title, body, comments)
 - Attachment capture and local download
 - Branch naming rules by ticket type (fix/feat/chore patterns)
-- Stable handoff file generation (`notion-handoff.md`) for quick `@` attach
+- Multi-ticket git worktree isolation (one ticket -> one worktree)
+- Named handoff alias generation per ticket (`notion-handoff-<slug>.md`) plus stable alias
+- Fast task switching CLI (`notion-auto tickets --checkout`) with interactive selection
 - Optional branch preparation from configured base branch
 - One-command Notion closeout reply + status transition
 - Automatic cleanup of local intake assets when ticket reaches `Pushed to dev`
@@ -66,6 +68,8 @@ Toolkit + MCP together gives the best result:
 - Excluded from normal git commits via local excludes
 - Dedupe + single-ticket controls reduce noisy retriggers
 - Cleanup on completion prevents local file accumulation
+- Worktree removal is safety-gated (blocked when uncommitted/unpushed work exists)
+- Handoffs include explicit branch/worktree verification instructions to avoid cross-ticket edits
 
 ---
 

@@ -25,8 +25,11 @@ When a Notion ticket matches trigger rules (status + assignee), the toolkit auto
 5. Optionally prepares/switches branch safely from configured base branch.
 6. Generates:
    - branch-specific handoff file in `.notion/handoffs/`
-   - stable alias `notion-handoff.md` for quick `@` attach in chat
+   - named root aliases (`notion-handoff-<ticket-slug>.md`) for quick `@` attach per active ticket
+   - stable alias `notion-handoff.md` for latest ticket compatibility
 7. Applies standard agent rules to ensure consistent output and closeout behavior.
+8. In multi-ticket mode, creates isolated git worktrees and tracks them under `.notion/worktree-map.json`.
+9. Provides a ticket switching CLI (`notion-auto tickets --checkout`) for fast worktree selection.
 
 At closeout, toolkit can also:
 
@@ -142,6 +145,12 @@ Over sprint scale, this compounds into meaningful developer throughput gains and
 - Optional single-ticket mode to avoid parallel dispatch noise
 - Dedupe and polling-state tracking
 - Cleanup policy to remove stale intake assets after `Pushed to dev`
+- Worktree cleanup safety guard:
+  - never auto-removes dirty worktrees
+  - never auto-removes branches with unpushed commits
+  - verifies push-state against the matching remote branch name
+- Handoff safety guard:
+  - handoff includes mandatory pre-edit branch/worktree verification instructions
 
 ---
 
@@ -152,7 +161,10 @@ Over sprint scale, this compounds into meaningful developer throughput gains and
 - Ticket body extraction into handoff
 - Attachment extraction and local download
 - Branch prefix rules based on ticket `Type`
-- Stable handoff alias for fast chat attach (`@notion-handoff.md`)
+- Multi-ticket worktree isolation with per-ticket named handoff aliases
+- Interactive worktree switching (`notion-auto tickets --checkout`) with optional `fzf` arrow-key picker
+- Copy/paste path output mode (`notion-auto tickets --paths true`) for fast manual switching
+- Stable + named handoff aliases for fast chat attach (`@notion-handoff*.md`)
 - One-command closeout update + status transition
 
 ---

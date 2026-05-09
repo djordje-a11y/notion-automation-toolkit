@@ -8,7 +8,7 @@
 import process from 'process';
 import fs from 'fs/promises';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import readline from 'readline';
 
 const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
@@ -93,8 +93,31 @@ function resolveWorkspaceFromArgv(argv = process.argv, envWorkspace = '') {
   }
 
   const selected = cliCandidate || envCandidate;
-  if (!selected) return process.cwd();
+  if (!selected) return resolveRootWorkspaceFromGitOrCwd();
   return path.isAbsolute(selected) ? selected : path.resolve(process.cwd(), selected);
+}
+
+function resolveRootWorkspaceFromGitOrCwd() {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: process.cwd(),
+      env: process.env,
+      encoding: 'utf8',
+    });
+    if (result.status === 0 && !result.error) {
+      const commonDirRaw = String(result.stdout || '').trim();
+      if (commonDirRaw) {
+        const commonDir = path.isAbsolute(commonDirRaw)
+          ? commonDirRaw
+          : path.resolve(process.cwd(), commonDirRaw);
+        const rootCandidate = path.resolve(commonDir, '..');
+        return rootCandidate;
+      }
+    }
+  } catch {
+    // fall through to cwd
+  }
+  return process.cwd();
 }
 
 function resolveMapPath(workspace, raw) {
@@ -157,12 +180,81 @@ function askLine(promptText) {
   });
 }
 
+function hasFzf() {
+  try {
+    const check = spawnSync('fzf', ['--version'], {
+      env: process.env,
+      stdio: 'ignore',
+    });
+    return check.status === 0 && !check.error;
+  } catch {
+    return false;
+  }
+}
+
+function pickWithFzf(rows) {
+  const lines = rows.map((entry, index) => {
+    const pageId = String(entry.pageId || '(unknown)');
+    const status = String(entry.status || '(unknown)');
+    const branch = String(entry.branch || '(unknown)');
+    const worktreePath = String(entry.worktreePath || '').trim();
+    return `${index + 1}\t${branch}\t${status}\t${pageId}\t${worktreePath}`;
+  });
+  const result = spawnSync(
+    'fzf',
+    ['--prompt', 'Select worktree > ', '--height', '40%', '--reverse', '--delimiter', '\t', '--with-nth', '2,3,4'],
+    {
+      env: process.env,
+      input: `${lines.join('\n')}\n`,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'inherit'],
+    },
+  );
+  if (result.error) return { ok: false, selected: null };
+  if (result.status !== 0) return { ok: true, selected: null };
+  const selectedLine = String(result.stdout || '').trim();
+  if (!selectedLine) return { ok: true, selected: null };
+  const parts = selectedLine.split('\t');
+  const picked = Number.parseInt(String(parts[0] || '').trim(), 10);
+  if (!Number.isInteger(picked) || picked < 1 || picked > rows.length) {
+    return { ok: true, selected: null };
+  }
+  return { ok: true, selected: rows[picked - 1] };
+}
+
 async function runCheckoutSelector(rows) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     fail('Interactive checkout requires a TTY terminal.');
   }
   if (!rows.length) {
     print('No active tracked tickets found.', colors.yellow);
+    return 0;
+  }
+
+  if (hasFzf()) {
+    const fzfPicked = pickWithFzf(rows);
+    if (!fzfPicked.ok) {
+      fail('Failed to launch fzf interactive selector.');
+    }
+    if (!fzfPicked.selected) {
+      print('Checkout cancelled.', colors.yellow);
+      return 0;
+    }
+    const selectedPath = String(fzfPicked.selected.worktreePath || '').trim();
+    if (!selectedPath) {
+      fail('Selected ticket has no worktree path.');
+    }
+    const shellBinary = String(process.env.SHELL || 'bash').trim() || 'bash';
+    print(`Opening shell in: ${selectedPath}`, colors.cyan);
+    await new Promise((resolve, reject) => {
+      const child = spawn(shellBinary, {
+        cwd: selectedPath,
+        env: process.env,
+        stdio: 'inherit',
+      });
+      child.on('error', reject);
+      child.on('exit', () => resolve());
+    });
     return 0;
   }
 

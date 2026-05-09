@@ -88,9 +88,34 @@ notion-auto intake       --workspace /path/to/repo --page-id <notion-page-id> --
 notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body "Fix is implemented."
 notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body-file ./reply.md --set-status "AI fix ready"
 notion-auto tickets      --workspace /path/to/repo
+notion-auto tickets      --checkout
+notion-auto tickets      --paths true
 ```
 
 Always run/start/stop via `notion-auto` when validating toolkit behavior.
+
+## Multi-Ticket Worktree Switching
+
+When worktree mode is enabled (`NOTION_AGENT_WORKTREE_MODE=true`), switch active task worktrees with:
+
+```bash
+notion-auto tickets --checkout
+```
+
+Notes:
+
+- `--workspace` is optional for `tickets`; when omitted, current repo/root workspace is auto-detected.
+- `--checkout` opens an interactive selector and drops you into the selected worktree shell.
+- `--paths true` prints copy/paste `cd` commands for all active worktrees.
+
+Optional (recommended) for arrow-key selector UX:
+
+```bash
+sudo apt update
+sudo apt install fzf
+```
+
+Without `fzf`, `--checkout` falls back to numeric selection.
 
 ## Generated Files
 

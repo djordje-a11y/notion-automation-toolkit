@@ -51,6 +51,7 @@ function printUsage() {
       '',
       'Usage:',
       '  notion-auto <command> [--workspace <path>] [command-options...]',
+      '  (If --workspace is omitted, current directory is used)',
       '',
       'Commands:',
       '  init    Add local ignore entries + create .notion dirs in a workspace',
@@ -68,7 +69,7 @@ function printUsage() {
       '  notion-auto start --workspace /path/to/repo',
       '  notion-auto stop --workspace /path/to/repo',
       '  notion-auto intake --workspace /path/to/repo --page-id <notion-page-id> --dispatch',
-      '  notion-auto tickets --workspace /path/to/repo',
+      '  notion-auto tickets --checkout',
       '',
     ].join('\n'),
   );

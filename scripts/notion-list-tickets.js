@@ -8,8 +8,11 @@
 import process from 'process';
 import fs from 'fs/promises';
 import path from 'path';
+import { spawn } from 'child_process';
+import readline from 'readline';
 
 const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
+const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
 
 const colors = {
   reset: '\x1b[0m',
@@ -101,6 +104,13 @@ function resolveMapPath(workspace, raw) {
   return path.resolve(workspace, value);
 }
 
+function resolveAliasMapPath(workspace, raw) {
+  const value = String(raw || DEFAULT_HANDOFF_ALIAS_MAP_FILE).trim();
+  if (!value) return path.resolve(workspace, DEFAULT_HANDOFF_ALIAS_MAP_FILE);
+  if (path.isAbsolute(value)) return value;
+  return path.resolve(workspace, value);
+}
+
 async function readJsonFileSafe(filePath, fallbackValue) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
@@ -121,13 +131,77 @@ function printUsage() {
   print('notion list tickets', colors.cyan);
   print('');
   print('Usage:');
-  print('  notion-auto tickets --workspace /path/to/repo');
+  print('  notion-auto tickets');
   print('');
   print('Options:');
-  print('  --workspace <path>');
+  print('  --workspace <path> (optional; defaults to current directory)');
   print(`  --map-file <path> (default ${DEFAULT_WORKTREE_MAP_FILE})`);
+  print(`  --alias-map-file <path> (default ${DEFAULT_HANDOFF_ALIAS_MAP_FILE})`);
   print('  --json true|false');
+  print('  --copy-paths true|false (print copy/paste cd commands only)');
+  print('  --paths true|false (alias of --copy-paths)');
+  print('  --checkout true|false (interactive selector, then open shell in chosen worktree)');
   print('');
+}
+
+function askLine(promptText) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(String(answer || '').trim());
+    });
+  });
+}
+
+async function runCheckoutSelector(rows) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    fail('Interactive checkout requires a TTY terminal.');
+  }
+  if (!rows.length) {
+    print('No active tracked tickets found.', colors.yellow);
+    return 0;
+  }
+
+  print('');
+  print('Select worktree to open:', colors.cyan);
+  rows.forEach((entry, index) => {
+    const pageId = String(entry.pageId || '(unknown)');
+    const status = String(entry.status || '(unknown)');
+    const branch = String(entry.branch || '(unknown)');
+    print(`  [${index + 1}] ${branch} | ${status} | ${pageId}`, colors.green);
+  });
+  print('');
+  const answer = await askLine(`Choose 1-${rows.length} (or 'q' to cancel): `);
+  if (!answer || normalize(answer) === 'q' || normalize(answer) === 'quit') {
+    print('Checkout cancelled.', colors.yellow);
+    return 0;
+  }
+  const picked = Number.parseInt(answer, 10);
+  if (!Number.isInteger(picked) || picked < 1 || picked > rows.length) {
+    fail(`Invalid selection '${answer}'. Expected a number between 1 and ${rows.length}.`);
+  }
+  const selected = rows[picked - 1];
+  const selectedPath = String(selected.worktreePath || '').trim();
+  if (!selectedPath) {
+    fail('Selected ticket has no worktree path.');
+  }
+
+  const shellBinary = String(process.env.SHELL || 'bash').trim() || 'bash';
+  print(`Opening shell in: ${selectedPath}`, colors.cyan);
+  await new Promise((resolve, reject) => {
+    const child = spawn(shellBinary, {
+      cwd: selectedPath,
+      env: process.env,
+      stdio: 'inherit',
+    });
+    child.on('error', reject);
+    child.on('exit', () => resolve());
+  });
+  return 0;
 }
 
 async function main(argv = process.argv) {
@@ -148,22 +222,40 @@ async function main(argv = process.argv) {
   }
 
   const mapFile = resolveMapPath(workspace, args['map-file']);
+  const aliasMapFile = resolveAliasMapPath(workspace, args['alias-map-file']);
   const outputJson = parseBoolean(args.json, false);
+  const checkoutMode = parseBoolean(args.checkout, false);
+  const copyPathsOnly = parseBoolean(
+    args['copy-paths'] !== undefined ? args['copy-paths'] : args.paths,
+    false,
+  );
   const mapData = await readJsonFileSafe(mapFile, { tickets: {} });
+  const aliasMapData = await readJsonFileSafe(aliasMapFile, { aliases: {} });
+  const aliases = aliasMapData?.aliases && typeof aliasMapData.aliases === 'object' ? aliasMapData.aliases : {};
   const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
   const rows = sortTickets(
     Object.values(tickets).filter((entry) => entry && typeof entry === 'object'),
   );
 
   if (outputJson) {
+    const withAlias = rows.map((entry) => {
+      const pageId = String(entry?.pageId || '').trim();
+      const aliasEntry = aliases[pageId] && typeof aliases[pageId] === 'object' ? aliases[pageId] : {};
+      return {
+        ...entry,
+        shortcutPath: String(aliasEntry.shortcutPath || '').trim(),
+        handoffAliasFile: String(aliasEntry.aliasFile || '').trim(),
+      };
+    });
     // eslint-disable-next-line no-console
     console.log(
       JSON.stringify(
         {
           workspace,
           mapFile,
+          aliasMapFile,
           count: rows.length,
-          tickets: rows,
+          tickets: withAlias,
         },
         null,
         2,
@@ -174,9 +266,29 @@ async function main(argv = process.argv) {
 
   print(`workspace: ${workspace}`, colors.dim);
   print(`map file: ${mapFile}`, colors.dim);
+  print(`alias map file: ${aliasMapFile}`, colors.dim);
 
   if (rows.length === 0) {
     print('No active tracked tickets found.', colors.yellow);
+    return 0;
+  }
+
+  if (checkoutMode) {
+    return runCheckoutSelector(rows);
+  }
+
+  if (copyPathsOnly) {
+    // Print plain commands without ANSI formatting for easy terminal copy/paste.
+    // eslint-disable-next-line no-console
+    console.log('# Copy/paste one of these commands:');
+    for (const entry of rows) {
+      const pageId = String(entry.pageId || '(unknown)');
+      const branch = String(entry.branch || '(unknown)');
+      const worktreePath = String(entry.worktreePath || '').trim();
+      if (!worktreePath) continue;
+      // eslint-disable-next-line no-console
+      console.log(`cd "${worktreePath}" # ${pageId} ${branch}`);
+    }
     return 0;
   }
 
@@ -190,9 +302,15 @@ async function main(argv = process.argv) {
     const worktreePath = String(entry.worktreePath || '(unknown)');
     const updatedAt = String(entry.updatedAt || '(unknown)');
     const cleanupPending = entry.cleanupPending ? ' yes' : ' no';
+    const aliasEntry = aliases[pageId] && typeof aliases[pageId] === 'object' ? aliases[pageId] : {};
+    const shortcutPath = String(aliasEntry.shortcutPath || '').trim();
     print(`- ${pageId} | ${status} | ${branch}`, colors.green);
     print(`  title: ${title}`, colors.dim);
     print(`  worktree: ${worktreePath}`, colors.dim);
+    if (shortcutPath) {
+      print(`  shortcut: ${shortcutPath}`, colors.cyan);
+      print(`  open: cd "${shortcutPath}"`, colors.cyan);
+    }
     print(`  updated: ${updatedAt} | cleanup_pending:${cleanupPending}`, colors.dim);
     if (entry.cleanupError) {
       print(`  cleanup_error: ${String(entry.cleanupError)}`, colors.yellow);

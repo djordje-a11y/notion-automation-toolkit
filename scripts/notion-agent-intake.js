@@ -70,6 +70,14 @@ const DEFAULT_LOCAL_ENV_FILES = ['.notion.local', '.env.local', 'scripts/.notion
 const DEFAULT_SECTION_PROPERTY = 'Type';
 const DEFAULT_DOWNLOAD_ATTACHMENTS = true;
 const DEFAULT_ATTACHMENTS_MAX = 20;
+const DEFAULT_WORKTREE_MODE = false;
+const DEFAULT_WORKTREE_DIR = '.notion/worktrees';
+const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
+const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
+const DEFAULT_PUBLISH_ROOT_HANDOFF_ALIAS = true;
+const DEFAULT_HANDOFF_ALIAS_WORDS = 3;
+const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
+const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
 
 const DEFAULT_RULES = [
   'Ticket intake rules:',
@@ -324,6 +332,7 @@ async function loadNotionEnvValues(args) {
     'NOTION_API_TOKEN',
     'NOTION_API_URL',
     'NOTION_API_VERSION',
+    'NOTION_STATUS_PROPERTY',
     'NOTION_AGENT_COMMAND',
     'NOTION_AGENT_OUTPUT_DIR',
     'NOTION_AGENT_HANDOFF_DIR',
@@ -345,6 +354,15 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_SECTION_PROPERTY',
     'NOTION_AGENT_DOWNLOAD_ATTACHMENTS',
     'NOTION_AGENT_ATTACHMENTS_MAX',
+    'NOTION_AGENT_WORKTREE_MODE',
+    'NOTION_AGENT_WORKTREE_DIR',
+    'NOTION_AGENT_WORKTREE_MAP_FILE',
+    'NOTION_AGENT_ACTIVE_TICKETS_FILE',
+    'NOTION_ROOT_WORKSPACE',
+    'NOTION_AGENT_PUBLISH_ROOT_HANDOFF_ALIAS',
+    'NOTION_AGENT_HANDOFF_ALIAS_WORDS',
+    'NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE',
+    'NOTION_AGENT_ACTIVE_HANDOFFS_FILE',
   ];
 
   const values = {};
@@ -393,9 +411,15 @@ function buildRuntimeConfig(args, envValues) {
   }
 
   return {
+    rootWorkspace: getOptionalArg(
+      args,
+      'root-workspace',
+      process.env.NOTION_ROOT_WORKSPACE || envValues.NOTION_ROOT_WORKSPACE || process.cwd(),
+    ),
     token,
     apiUrl: String(process.env.NOTION_API_URL || envValues.NOTION_API_URL || DEFAULT_API_URL).replace(/\/$/, ''),
     apiVersion: String(process.env.NOTION_API_VERSION || envValues.NOTION_API_VERSION || DEFAULT_API_VERSION).trim(),
+    envFile: resolveEnvFileCandidate(getOptionalArg(args, 'env-file')),
     pageId: getRequiredArg(args, 'page-id', '--page-id'),
     maxComments: parseInteger(
       getOptionalArg(args, 'max-comments', String(DEFAULT_MAX_COMMENTS)),
@@ -565,6 +589,80 @@ function buildRuntimeConfig(args, envValues) {
       ),
       DEFAULT_ATTACHMENTS_MAX,
     ),
+    worktreeMode: parseBoolean(
+      getOptionalArg(
+        args,
+        'worktree-mode',
+        process.env.NOTION_AGENT_WORKTREE_MODE ||
+          envValues.NOTION_AGENT_WORKTREE_MODE ||
+          String(DEFAULT_WORKTREE_MODE),
+      ),
+      DEFAULT_WORKTREE_MODE,
+    ),
+    worktreeResolved: parseBoolean(
+      getOptionalArg(
+        args,
+        'worktree-resolved',
+        process.env.NOTION_AGENT_WORKTREE_RESOLVED || 'false',
+      ),
+      false,
+    ),
+    worktreeDir: getOptionalArg(
+      args,
+      'worktree-dir',
+      process.env.NOTION_AGENT_WORKTREE_DIR || envValues.NOTION_AGENT_WORKTREE_DIR || DEFAULT_WORKTREE_DIR,
+    ),
+    worktreeMapFile: getOptionalArg(
+      args,
+      'worktree-map-file',
+      process.env.NOTION_AGENT_WORKTREE_MAP_FILE ||
+        envValues.NOTION_AGENT_WORKTREE_MAP_FILE ||
+        DEFAULT_WORKTREE_MAP_FILE,
+    ),
+    activeTicketsFile: getOptionalArg(
+      args,
+      'active-tickets-file',
+      process.env.NOTION_AGENT_ACTIVE_TICKETS_FILE ||
+        envValues.NOTION_AGENT_ACTIVE_TICKETS_FILE ||
+        DEFAULT_ACTIVE_TICKETS_FILE,
+    ),
+    publishRootHandoffAlias: parseBoolean(
+      getOptionalArg(
+        args,
+        'publish-root-handoff-alias',
+        process.env.NOTION_AGENT_PUBLISH_ROOT_HANDOFF_ALIAS ||
+          envValues.NOTION_AGENT_PUBLISH_ROOT_HANDOFF_ALIAS ||
+          String(DEFAULT_PUBLISH_ROOT_HANDOFF_ALIAS),
+      ),
+      DEFAULT_PUBLISH_ROOT_HANDOFF_ALIAS,
+    ),
+    handoffAliasWords: parseInteger(
+      getOptionalArg(
+        args,
+        'handoff-alias-words',
+        process.env.NOTION_AGENT_HANDOFF_ALIAS_WORDS ||
+          envValues.NOTION_AGENT_HANDOFF_ALIAS_WORDS ||
+          String(DEFAULT_HANDOFF_ALIAS_WORDS),
+      ),
+      DEFAULT_HANDOFF_ALIAS_WORDS,
+    ),
+    handoffAliasMapFile: getOptionalArg(
+      args,
+      'handoff-alias-map-file',
+      process.env.NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE ||
+        envValues.NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE ||
+        DEFAULT_HANDOFF_ALIAS_MAP_FILE,
+    ),
+    activeHandoffsFile: getOptionalArg(
+      args,
+      'active-handoffs-file',
+      process.env.NOTION_AGENT_ACTIVE_HANDOFFS_FILE ||
+        envValues.NOTION_AGENT_ACTIVE_HANDOFFS_FILE ||
+        DEFAULT_ACTIVE_HANDOFFS_FILE,
+    ),
+    statusPropertyName: String(
+      process.env.NOTION_STATUS_PROPERTY || envValues.NOTION_STATUS_PROPERTY || 'Status',
+    ).trim(),
     sectionPropertyName: String(
       process.env.NOTION_AGENT_SECTION_PROPERTY ||
         envValues.NOTION_AGENT_SECTION_PROPERTY ||
@@ -690,6 +788,14 @@ function getPageTitle(page) {
   const explicit = findPropertyByType(page, 'title');
   const text = propertyValueToText(explicit);
   return text || String(page?.id || '');
+}
+
+function resolveStatusText(page, statusPropertyName = 'Status') {
+  const explicit = findPropertyByName(page, statusPropertyName);
+  const explicitText = propertyValueToText(explicit);
+  if (explicitText) return explicitText;
+  const statusLike = findPropertyByType(page, 'status') || findPropertyByType(page, 'select');
+  return propertyValueToText(statusLike);
 }
 
 function normalizePropertySnapshot(properties) {
@@ -1016,19 +1122,47 @@ function sanitizeBranchForHandoffFilename(branch) {
   return s || 'notion-ticket';
 }
 
-function buildIdeHandoffBody({ branchLabel, relativeHandoffPath, archiveHandoffPath, promptText }) {
+function resolveBranchAliasSlug(branchLabel, wordsCountRaw) {
+  const wordsCount = Math.max(2, Math.min(3, Number(wordsCountRaw || DEFAULT_HANDOFF_ALIAS_WORDS)));
+  const raw = String(branchLabel || '').trim() || 'notion-ticket';
+  const branchTail = raw.split('/').filter(Boolean).pop() || raw;
+  const words = branchTail
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter(Boolean)
+    .slice(0, wordsCount);
+  return slugifyForBranch(words.join('-') || branchTail, 64);
+}
+
+function buildIdeHandoffBody({
+  branchLabel,
+  relativeHandoffPath,
+  archiveHandoffPath,
+  promptText,
+  worktreePath,
+  rootWorkspacePath,
+}) {
   const archiveLine =
     archiveHandoffPath && archiveHandoffPath !== relativeHandoffPath
       ? `- **Branch-specific handoff file:** \`${archiveHandoffPath}\``
       : '';
+  const worktreeLine = String(worktreePath || '').trim()
+    ? `- **Worktree path (use this for code changes):** \`${String(worktreePath).trim()}\``
+    : '';
+  const rootWorkspaceLine = String(rootWorkspacePath || '').trim()
+    ? `- **Root workspace:** \`${String(rootWorkspacePath).trim()}\``
+    : '';
   return [
     '# Cursor IDE Agent — Notion handoff',
     '',
     `- **Git branch:** \`${branchLabel}\``,
     `- **This file (repo-relative):** \`${relativeHandoffPath}\``,
+    ...(worktreeLine ? [worktreeLine] : []),
+    ...(rootWorkspaceLine ? [rootWorkspaceLine] : []),
     ...(archiveLine ? [archiveLine] : []),
     '',
-    'Branch handoff files are kept in `.notion/handoffs/` and the stable alias is refreshed on each run.',
+    'Only modify code inside the worktree path listed above for this ticket. Do not mix files from other tasks/worktrees.',
+    'Branch handoff files are kept in `.notion/handoffs/` and stable aliases are refreshed on each run.',
     '',
     '---',
     '',
@@ -1042,10 +1176,237 @@ function resolveRepoRelativePath(absolutePath) {
   return rel.split(path.sep).join('/');
 }
 
+function resolveRepoRelativePathFrom(workspacePath, absolutePath) {
+  const rel = path.relative(workspacePath, absolutePath);
+  return rel.split(path.sep).join('/');
+}
+
 function ensureTrailingNewline(text) {
   const raw = String(text || '');
   if (!raw) return '\n';
   return raw.endsWith('\n') ? raw : `${raw}\n`;
+}
+
+async function readJsonFileSafe(filePath, fallbackValue) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+async function writeJsonFile(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+function resolvePathFromWorkspace(workspacePath, rawPath, fallbackValue = '') {
+  const value = String(rawPath || fallbackValue || '').trim();
+  if (!value) return '';
+  if (path.isAbsolute(value)) return value;
+  return path.resolve(workspacePath, value);
+}
+
+function parseWorktreePorcelain(output) {
+  const lines = String(output || '').split(/\r?\n/);
+  const entries = [];
+  let current = null;
+  for (const line of lines) {
+    const raw = String(line || '').trim();
+    if (!raw) continue;
+    if (raw.startsWith('worktree ')) {
+      if (current) entries.push(current);
+      current = {
+        path: raw.slice('worktree '.length).trim(),
+        branchRef: '',
+      };
+      continue;
+    }
+    if (!current) continue;
+    if (raw.startsWith('branch ')) current.branchRef = raw.slice('branch '.length).trim();
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+async function getGitWorktreeEntries(config) {
+  const output = await runGit(['worktree', 'list', '--porcelain'], config);
+  return parseWorktreePorcelain(output);
+}
+
+function buildWorktreeFolderName(pageId, branchName) {
+  const idShort = String(pageId || '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 8)
+    .toLowerCase();
+  const branchFlat = sanitizeBranchForHandoffFilename(branchName || 'ticket');
+  return `${idShort || 'ticket'}-${branchFlat}`;
+}
+
+async function ensureTicketWorktree(config, page, branchName) {
+  const rootWorkspace = String(config.rootWorkspace || process.cwd());
+  const gitConfig = { ...config, gitWorkingDirectory: rootWorkspace };
+  const worktreeRoot = resolvePathFromWorkspace(rootWorkspace, config.worktreeDir, DEFAULT_WORKTREE_DIR);
+  const mapFilePath = resolvePathFromWorkspace(rootWorkspace, config.worktreeMapFile, DEFAULT_WORKTREE_MAP_FILE);
+  const pageId = String(page?.id || '').trim();
+  const pageTitle = getPageTitle(page);
+  const status = resolveStatusText(page, config.statusPropertyName);
+  const folderName = buildWorktreeFolderName(pageId, branchName);
+  const desiredPath = path.join(worktreeRoot, folderName);
+
+  await fs.mkdir(worktreeRoot, { recursive: true });
+  const worktrees = await getGitWorktreeEntries(gitConfig);
+  const branchRef = `refs/heads/${branchName}`;
+  const existingByBranch = worktrees.find((entry) => String(entry?.branchRef || '').trim() === branchRef);
+  if (existingByBranch?.path) {
+    return { path: existingByBranch.path, reused: true, branch: branchName };
+  }
+
+  const branchExists = await hasGitRef(branchRef, gitConfig);
+  if (branchExists) {
+    await runGit(['worktree', 'add', desiredPath, branchName], gitConfig);
+  } else if (await remoteBranchExists(config.gitRemote, branchName, gitConfig)) {
+    await runGit(['fetch', config.gitRemote, branchName], gitConfig);
+    await runGit(['worktree', 'add', '-B', branchName, desiredPath, `${config.gitRemote}/${branchName}`], gitConfig);
+  } else {
+    await runGit(['fetch', config.gitRemote, config.gitBaseBranch], gitConfig);
+    await runGit(
+      ['worktree', 'add', '-b', branchName, desiredPath, `${config.gitRemote}/${config.gitBaseBranch}`],
+      gitConfig,
+    );
+  }
+
+  const mapData = await readJsonFileSafe(mapFilePath, { tickets: {} });
+  const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+  tickets[pageId] = {
+    pageId,
+    pageTitle,
+    status,
+    branch: branchName,
+    worktreePath: desiredPath,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeJsonFile(mapFilePath, {
+    ...mapData,
+    tickets,
+  });
+
+  return { path: desiredPath, reused: false, branch: branchName };
+}
+
+async function writeActiveTicketsIndex(config) {
+  const rootWorkspace = String(config.rootWorkspace || process.cwd());
+  const mapFilePath = resolvePathFromWorkspace(rootWorkspace, config.worktreeMapFile, DEFAULT_WORKTREE_MAP_FILE);
+  const indexFilePath = resolvePathFromWorkspace(
+    rootWorkspace,
+    config.activeTicketsFile,
+    DEFAULT_ACTIVE_TICKETS_FILE,
+  );
+  const mapData = await readJsonFileSafe(mapFilePath, { tickets: {} });
+  const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+  const rows = Object.values(tickets)
+    .filter((entry) => entry && typeof entry === 'object')
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+
+  const body = [
+    '# Active Notion Tickets',
+    '',
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    rows.length === 0
+      ? '_No active worktree tickets tracked yet._'
+      : '| Ticket | Status | Branch | Worktree |',
+    ...(rows.length === 0 ? [] : ['|---|---|---|---|']),
+    ...rows.map((entry) => {
+      const ticket = String(entry.pageId || '').trim() || '(unknown)';
+      const status = String(entry.status || '').trim() || '(unknown)';
+      const branch = String(entry.branch || '').trim() || '(unknown)';
+      const worktree = String(entry.worktreePath || '').trim() || '(unknown)';
+      return `| ${ticket} | ${status} | \`${branch}\` | \`${worktree}\` |`;
+    }),
+    '',
+  ].join('\n');
+
+  await fs.mkdir(path.dirname(indexFilePath), { recursive: true });
+  await fs.writeFile(indexFilePath, ensureTrailingNewline(body), 'utf8');
+}
+
+async function writeActiveHandoffsIndex(config, mapPayload) {
+  const rootWorkspace = String(config.rootWorkspace || process.cwd());
+  const indexFilePath = resolvePathFromWorkspace(
+    rootWorkspace,
+    config.activeHandoffsFile,
+    DEFAULT_ACTIVE_HANDOFFS_FILE,
+  );
+  const aliases = Object.entries(mapPayload?.aliases || {})
+    .map(([pageId, entry]) => ({
+      pageId,
+      aliasFile: String(entry?.aliasFile || '').trim(),
+      branch: String(entry?.branch || '').trim(),
+      worktreePath: String(entry?.worktreePath || '').trim(),
+      updatedAt: String(entry?.updatedAt || '').trim(),
+    }))
+    .filter((entry) => entry.aliasFile)
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+
+  const rows =
+    aliases.length === 0
+      ? ['_No active handoff aliases tracked yet._']
+      : [
+          '| Ticket | Alias file | Branch | Worktree | Updated |',
+          '|---|---|---|---|---|',
+          ...aliases.map(
+            (entry) =>
+              `| ${entry.pageId} | \`${entry.aliasFile}\` | \`${entry.branch || '(unknown)'}\` | \`${entry.worktreePath || '(unknown)'}\` | ${entry.updatedAt || '(unknown)'} |`,
+          ),
+        ];
+  const body = ['# Active Notion Handoff Aliases', '', ...rows, ''].join('\n');
+  await fs.mkdir(path.dirname(indexFilePath), { recursive: true });
+  await fs.writeFile(indexFilePath, ensureTrailingNewline(body), 'utf8');
+  return indexFilePath;
+}
+
+async function rerunIntakeInWorktree(config, worktreePath, originalArgs) {
+  const scriptPath = path.resolve(String(process.argv[1] || 'scripts/notion-agent-intake.js'));
+  const args = [
+    scriptPath,
+    '--workspace',
+    worktreePath,
+    '--page-id',
+    String(config.pageId || ''),
+    '--worktree-resolved',
+    'true',
+  ];
+
+  if (config.dispatch) args.push('--dispatch');
+  if (config.envFile) args.push('--env-file', config.envFile);
+  if (originalArgs['git-require-clean-worktree'] !== undefined) {
+    args.push('--git-require-clean-worktree', String(originalArgs['git-require-clean-worktree']));
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn('node', args, {
+      cwd: worktreePath,
+      env: {
+        ...process.env,
+        NOTION_ROOT_WORKSPACE: String(config.rootWorkspace || process.cwd()),
+      },
+      stdio: 'inherit',
+    });
+    child.on('error', (error) => reject(error));
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`Worktree intake terminated by signal: ${signal}`));
+        return;
+      }
+      if (Number(code || 0) !== 0) {
+        reject(new Error(`Worktree intake failed with exit code ${code}`));
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 function pickLatestComment(comments) {
@@ -1636,6 +1997,8 @@ async function writeIntakeFiles(config, context, promptText) {
   let handoffPath = '';
   let handoffBaseName = '';
   let handoffAliasPath = '';
+  let rootHandoffAliasPath = '';
+  let activeHandoffsPath = '';
   let handoffWriteMode = 'full-ticket';
   let retriggerComment = null;
   if (config.ideHandoff) {
@@ -1663,6 +2026,8 @@ async function writeIntakeFiles(config, context, promptText) {
       relativeHandoffPath: resolveRepoRelativePath(handoffPath),
       archiveHandoffPath: '',
       promptText: handoffPrompt,
+      worktreePath: process.cwd(),
+      rootWorkspacePath: String(config.rootWorkspace || process.cwd()),
     });
     await fs.writeFile(handoffPath, ensureTrailingNewline(handoffBody), 'utf8');
 
@@ -1676,8 +2041,48 @@ async function writeIntakeFiles(config, context, promptText) {
         relativeHandoffPath: resolveRepoRelativePath(handoffAliasPath),
         archiveHandoffPath: resolveRepoRelativePath(handoffPath),
         promptText: handoffPrompt,
+        worktreePath: process.cwd(),
+        rootWorkspacePath: String(config.rootWorkspace || process.cwd()),
       });
       await fs.writeFile(handoffAliasPath, ensureTrailingNewline(aliasBody), 'utf8');
+    }
+
+    const shouldPublishRootAlias = Boolean(
+      config.publishRootHandoffAlias && config.worktreeMode && config.worktreeResolved,
+    );
+    if (shouldPublishRootAlias) {
+      const rootWorkspace = String(config.rootWorkspace || process.cwd());
+      const aliasSlug = resolveBranchAliasSlug(branchLabel, config.handoffAliasWords);
+      const aliasFileName = `notion-handoff-${aliasSlug}.md`;
+      rootHandoffAliasPath = path.resolve(rootWorkspace, aliasFileName);
+      const rootAliasBody = buildIdeHandoffBody({
+        branchLabel,
+        relativeHandoffPath: resolveRepoRelativePathFrom(rootWorkspace, rootHandoffAliasPath),
+        archiveHandoffPath: resolveRepoRelativePathFrom(rootWorkspace, handoffPath),
+        promptText: handoffPrompt,
+        worktreePath: process.cwd(),
+        rootWorkspacePath: rootWorkspace,
+      });
+      await fs.mkdir(path.dirname(rootHandoffAliasPath), { recursive: true });
+      await fs.writeFile(rootHandoffAliasPath, ensureTrailingNewline(rootAliasBody), 'utf8');
+
+      const mapFilePath = resolvePathFromWorkspace(
+        rootWorkspace,
+        config.handoffAliasMapFile,
+        DEFAULT_HANDOFF_ALIAS_MAP_FILE,
+      );
+      const aliasMap = await readJsonFileSafe(mapFilePath, {});
+      const aliases = aliasMap && typeof aliasMap.aliases === 'object' ? aliasMap.aliases : {};
+      aliases[String(context.ticket.id || '').trim() || 'unknown'] = {
+        aliasFile: aliasFileName,
+        aliasPath: rootHandoffAliasPath,
+        branch: branchLabel,
+        worktreePath: process.cwd(),
+        updatedAt: new Date().toISOString(),
+      };
+      const mapPayload = { updatedAt: new Date().toISOString(), aliases };
+      await writeJsonFile(mapFilePath, mapPayload);
+      activeHandoffsPath = await writeActiveHandoffsIndex(config, mapPayload);
     }
   }
 
@@ -1690,6 +2095,8 @@ async function writeIntakeFiles(config, context, promptText) {
     handoffPath: handoffPath || null,
     handoffBaseName: handoffBaseName || null,
     handoffAliasPath: handoffAliasPath || null,
+    rootHandoffAliasPath: rootHandoffAliasPath || null,
+    activeHandoffsPath: activeHandoffsPath || null,
     handoffWriteMode,
     retriggerComment: retriggerComment
       ? {
@@ -1808,6 +2215,15 @@ function printUsage() {
   print('  --ide-handoff true|false');
   print(`  --download-attachments true|false (default ${String(DEFAULT_DOWNLOAD_ATTACHMENTS)})`);
   print(`  --attachments-max <n> (default ${String(DEFAULT_ATTACHMENTS_MAX)})`);
+  print(`  --worktree-mode true|false (default ${String(DEFAULT_WORKTREE_MODE)})`);
+  print(`  --worktree-dir <dir> (default ${DEFAULT_WORKTREE_DIR})`);
+  print(`  --worktree-map-file <path> (default ${DEFAULT_WORKTREE_MAP_FILE})`);
+  print(`  --active-tickets-file <path> (default ${DEFAULT_ACTIVE_TICKETS_FILE})`);
+  print(`  --publish-root-handoff-alias true|false (default ${String(DEFAULT_PUBLISH_ROOT_HANDOFF_ALIAS)})`);
+  print(`  --handoff-alias-words <2|3> (default ${String(DEFAULT_HANDOFF_ALIAS_WORDS)})`);
+  print(`  --handoff-alias-map-file <path> (default ${DEFAULT_HANDOFF_ALIAS_MAP_FILE})`);
+  print(`  --active-handoffs-file <path> (default ${DEFAULT_ACTIVE_HANDOFFS_FILE})`);
+  print('  --root-workspace <path>');
   print('  --dispatch');
   print('  --agent-command "<shell command>"');
   print('  --env-file <path>');
@@ -1823,6 +2239,9 @@ async function main(argv = process.argv) {
 
   const loadedEnv = await loadNotionEnvValues(args);
   const config = buildRuntimeConfig(args, loadedEnv.values);
+  if (!config.envFile && loadedEnv.source) {
+    config.envFile = loadedEnv.source;
+  }
 
   print(`notion token: ${maskSecret(config.token)} (masked)`, colors.dim);
   print(`workspace: ${process.cwd()}`, colors.dim);
@@ -1855,6 +2274,22 @@ async function main(argv = process.argv) {
   const matchedBranchRule = branchResolution.matchedRule;
   const branchIncludeTicketId = branchResolution.includeTicketId;
   let gitPreparation = null;
+
+  if (config.worktreeMode && !config.worktreeResolved) {
+    const worktree = await ensureTicketWorktree(config, page, branchCandidate);
+    await writeActiveTicketsIndex(config);
+    print(
+      `Worktree mode: ${worktree.reused ? 'reusing' : 'created'} worktree '${worktree.path}' for branch '${worktree.branch}'.`,
+      colors.green,
+    );
+    await rerunIntakeInWorktree(config, worktree.path, args);
+    return 0;
+  }
+
+  if (config.worktreeMode && config.worktreeResolved && config.dispatch && config.gitPrepareBranch) {
+    print('Worktree mode: git prepare skipped in resolved worktree context.', colors.dim);
+    config.gitPrepareBranch = false;
+  }
 
   if (config.dispatch && config.gitPrepareBranch) {
     gitPreparation = await prepareGitBranch(config, branchCandidate);
@@ -1908,6 +2343,15 @@ async function main(argv = process.argv) {
       `Stable handoff alias (@ this file in Cursor Agent): ${resolveRepoRelativePath(files.handoffAliasPath)}`,
       colors.green,
     );
+  }
+  if (files.rootHandoffAliasPath) {
+    print(
+      `Root handoff alias (@ this file from root workspace): ${files.rootHandoffAliasPath}`,
+      colors.green,
+    );
+  }
+  if (files.activeHandoffsPath) {
+    print(`Active handoff aliases index: ${files.activeHandoffsPath}`, colors.green);
   }
   if (files.handoffWriteMode === 'retrigger-latest-only') {
     print(

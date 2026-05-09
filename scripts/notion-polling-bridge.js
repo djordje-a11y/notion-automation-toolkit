@@ -973,76 +973,80 @@ async function evaluateWorktreeCleanupSafety(config, worktreePath) {
     };
   }
 
-  const headResult = await runCommandCapture('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], {
+  const branchResult = await runCommandCapture('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
     cwd: config.rootWorkspace,
     env: process.env,
   });
-  if (headResult.code !== 0 || headResult.signal) {
-    const details = String(headResult.stderr || headResult.stdout || '').trim();
+  if (branchResult.code !== 0 || branchResult.signal) {
+    const details = String(branchResult.stderr || branchResult.stdout || '').trim();
     return {
       safeToRemove: false,
-      reason: details || 'unable to resolve worktree HEAD before cleanup',
+      reason: details || 'unable to resolve worktree branch before cleanup',
     };
   }
-  const headSha = String(headResult.stdout || '').trim();
-  if (!headSha) {
+  const localBranch = String(branchResult.stdout || '').trim();
+  if (!localBranch || localBranch === 'HEAD') {
     return {
       safeToRemove: false,
-      reason: 'unable to resolve worktree HEAD before cleanup',
+      reason: 'unable to resolve a local branch name before cleanup',
     };
   }
 
-  const upstreamResult = await runCommandCapture(
+  const preferredRemoteRef = `refs/remotes/origin/${localBranch}`;
+  const preferredRemoteCheck = await runCommandCapture(
     'git',
-    ['-C', worktreePath, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+    ['-C', worktreePath, 'show-ref', '--verify', '--quiet', preferredRemoteRef],
     { cwd: config.rootWorkspace, env: process.env },
   );
-  if (upstreamResult.code === 0 && !upstreamResult.signal) {
-    const upstreamRef = String(upstreamResult.stdout || '').trim();
-    if (upstreamRef) {
-      const aheadResult = await runCommandCapture(
-        'git',
-        ['-C', worktreePath, 'rev-list', '--count', `${upstreamRef}..HEAD`],
-        { cwd: config.rootWorkspace, env: process.env },
-      );
-      const aheadCount = Number.parseInt(String(aheadResult.stdout || '').trim(), 10);
-      if (aheadResult.code !== 0 || aheadResult.signal || !Number.isFinite(aheadCount)) {
-        const details = String(aheadResult.stderr || aheadResult.stdout || '').trim();
-        return {
-          safeToRemove: false,
-          reason: details || `unable to verify push state against ${upstreamRef}`,
-        };
-      }
-      if (aheadCount > 0) {
-        return {
-          safeToRemove: false,
-          reason: `worktree branch is ahead of ${upstreamRef} by ${aheadCount} commit(s); auto-remove skipped`,
-        };
-      }
-      return { safeToRemove: true, reason: '' };
+  let remoteBranchRef = '';
+  if (preferredRemoteCheck.code === 0 && !preferredRemoteCheck.signal) {
+    remoteBranchRef = `origin/${localBranch}`;
+  } else {
+    const remoteListResult = await runCommandCapture(
+      'git',
+      ['-C', worktreePath, 'for-each-ref', '--format=%(refname:short)', `refs/remotes/*/${localBranch}`],
+      { cwd: config.rootWorkspace, env: process.env },
+    );
+    if (remoteListResult.code !== 0 || remoteListResult.signal) {
+      const details = String(remoteListResult.stderr || remoteListResult.stdout || '').trim();
+      return {
+        safeToRemove: false,
+        reason: details || `unable to verify remote branch for ${localBranch}`,
+      };
+    }
+    const refs = String(remoteListResult.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean)
+      .filter((line) => !line.endsWith('/HEAD'));
+    if (refs.length > 0) {
+      remoteBranchRef = refs[0];
     }
   }
-
-  const remoteContainsResult = await runCommandCapture(
-    'git',
-    ['branch', '-r', '--contains', headSha],
-    { cwd: config.rootWorkspace, env: process.env },
-  );
-  if (remoteContainsResult.code !== 0 || remoteContainsResult.signal) {
-    const details = String(remoteContainsResult.stderr || remoteContainsResult.stdout || '').trim();
+  if (!remoteBranchRef) {
     return {
       safeToRemove: false,
-      reason: details || 'unable to verify whether HEAD exists on any remote branch',
+      reason: `remote branch '${localBranch}' does not exist yet; auto-remove skipped`,
     };
   }
-  const remoteContains = String(remoteContainsResult.stdout || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trim())
-    .filter(Boolean);
-  if (remoteContains.length === 0) {
+
+  const aheadResult = await runCommandCapture(
+    'git',
+    ['-C', worktreePath, 'rev-list', '--count', `${remoteBranchRef}..HEAD`],
+    { cwd: config.rootWorkspace, env: process.env },
+  );
+  const aheadCount = Number.parseInt(String(aheadResult.stdout || '').trim(), 10);
+  if (aheadResult.code !== 0 || aheadResult.signal || !Number.isFinite(aheadCount)) {
+    const details = String(aheadResult.stderr || aheadResult.stdout || '').trim();
     return {
       safeToRemove: false,
-      reason: 'worktree HEAD is not on any remote branch; auto-remove skipped',
+      reason: details || `unable to verify push state against ${remoteBranchRef}`,
+    };
+  }
+  if (aheadCount > 0) {
+    return {
+      safeToRemove: false,
+      reason: `worktree branch is ahead of ${remoteBranchRef} by ${aheadCount} commit(s); auto-remove skipped`,
     };
   }
   return { safeToRemove: true, reason: '' };

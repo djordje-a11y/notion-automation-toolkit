@@ -62,6 +62,12 @@ const DEFAULT_INITIAL_LOOKBACK_SECONDS = 0;
 const DEFAULT_AGENT_OUTPUT_DIR = '.notion/intake';
 const DEFAULT_CLEANUP_ON_STATUS = true;
 const DEFAULT_CLEANUP_STATUS = 'Pushed to dev';
+const DEFAULT_WORKTREE_MODE = false;
+const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
+const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
+const DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP = true;
+const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
+const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
 const DEFAULT_ON_MATCH_COMMAND = `node "${path.resolve(
   TOOLKIT_ROOT,
   'scripts/notion-agent-intake.js',
@@ -110,6 +116,13 @@ function parseBoolean(value, fallback = false) {
   if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function resolvePathFromWorkspace(workspacePath, rawPath, fallbackValue = '') {
+  const value = String(rawPath || fallbackValue || '').trim();
+  if (!value) return '';
+  if (path.isAbsolute(value)) return value;
+  return path.resolve(workspacePath, value);
 }
 
 function parseList(value) {
@@ -235,6 +248,12 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_OUTPUT_DIR',
     'NOTION_CLEANUP_ON_STATUS',
     'NOTION_CLEANUP_STATUS',
+    'NOTION_AGENT_WORKTREE_MODE',
+    'NOTION_AGENT_WORKTREE_MAP_FILE',
+    'NOTION_AGENT_ACTIVE_TICKETS_FILE',
+    'NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP',
+    'NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE',
+    'NOTION_AGENT_ACTIVE_HANDOFFS_FILE',
     'NOTION_ENV_FILE',
   ];
 
@@ -275,6 +294,7 @@ function maskSecret(value) {
 }
 
 function buildRuntimeConfig(args, envValues) {
+  const rootWorkspace = process.cwd();
   const token = String(process.env.NOTION_API_TOKEN || envValues.NOTION_API_TOKEN || '').trim();
   if (!token) {
     fail(
@@ -319,11 +339,54 @@ function buildRuntimeConfig(args, envValues) {
     'output-dir',
     process.env.NOTION_AGENT_OUTPUT_DIR || envValues.NOTION_AGENT_OUTPUT_DIR || DEFAULT_AGENT_OUTPUT_DIR,
   );
-  const outputDir = path.isAbsolute(outputDirRaw)
-    ? outputDirRaw
-    : path.resolve(process.cwd(), outputDirRaw);
+  const outputDir = resolvePathFromWorkspace(rootWorkspace, outputDirRaw, DEFAULT_AGENT_OUTPUT_DIR);
+  const worktreeMapFile = resolvePathFromWorkspace(
+    rootWorkspace,
+    getOptionalArg(
+      args,
+      'worktree-map-file',
+      process.env.NOTION_AGENT_WORKTREE_MAP_FILE ||
+        envValues.NOTION_AGENT_WORKTREE_MAP_FILE ||
+        DEFAULT_WORKTREE_MAP_FILE,
+    ),
+    DEFAULT_WORKTREE_MAP_FILE,
+  );
+  const activeTicketsFile = resolvePathFromWorkspace(
+    rootWorkspace,
+    getOptionalArg(
+      args,
+      'active-tickets-file',
+      process.env.NOTION_AGENT_ACTIVE_TICKETS_FILE ||
+        envValues.NOTION_AGENT_ACTIVE_TICKETS_FILE ||
+        DEFAULT_ACTIVE_TICKETS_FILE,
+    ),
+    DEFAULT_ACTIVE_TICKETS_FILE,
+  );
+  const handoffAliasMapFile = resolvePathFromWorkspace(
+    rootWorkspace,
+    getOptionalArg(
+      args,
+      'handoff-alias-map-file',
+      process.env.NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE ||
+        envValues.NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE ||
+        DEFAULT_HANDOFF_ALIAS_MAP_FILE,
+    ),
+    DEFAULT_HANDOFF_ALIAS_MAP_FILE,
+  );
+  const activeHandoffsFile = resolvePathFromWorkspace(
+    rootWorkspace,
+    getOptionalArg(
+      args,
+      'active-handoffs-file',
+      process.env.NOTION_AGENT_ACTIVE_HANDOFFS_FILE ||
+        envValues.NOTION_AGENT_ACTIVE_HANDOFFS_FILE ||
+        DEFAULT_ACTIVE_HANDOFFS_FILE,
+    ),
+    DEFAULT_ACTIVE_HANDOFFS_FILE,
+  );
 
   return {
+    rootWorkspace,
     token,
     apiUrl: String(process.env.NOTION_API_URL || envValues.NOTION_API_URL || DEFAULT_API_URL).replace(/\/$/, ''),
     apiVersion: String(
@@ -458,6 +521,30 @@ function buildRuntimeConfig(args, envValues) {
         process.env.NOTION_CLEANUP_STATUS || envValues.NOTION_CLEANUP_STATUS || DEFAULT_CLEANUP_STATUS,
       ),
     ).trim(),
+    worktreeMode: parseBoolean(
+      getOptionalArg(
+        args,
+        'worktree-mode',
+        process.env.NOTION_AGENT_WORKTREE_MODE ||
+          envValues.NOTION_AGENT_WORKTREE_MODE ||
+          String(DEFAULT_WORKTREE_MODE),
+      ),
+      DEFAULT_WORKTREE_MODE,
+    ),
+    worktreeMapFile,
+    activeTicketsFile,
+    handoffAliasMapFile,
+    activeHandoffsFile,
+    worktreeAutoRemoveOnCleanup: parseBoolean(
+      getOptionalArg(
+        args,
+        'worktree-auto-remove-on-cleanup',
+        process.env.NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP ||
+          envValues.NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP ||
+          String(DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP),
+      ),
+      DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP,
+    ),
   };
 }
 
@@ -739,6 +826,198 @@ async function cleanupTicketIntakeArtifacts(config, pageId) {
   return { removedFiles, removedAssetDir };
 }
 
+async function runCommandCapture(binary, args, options = {}) {
+  const cwd = String(options.cwd || process.cwd());
+  const env = options.env || process.env;
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    const child = spawn(binary, args, {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (child.stdout) child.stdout.on('data', (chunk) => (stdout += String(chunk || '')));
+    if (child.stderr) child.stderr.on('data', (chunk) => (stderr += String(chunk || '')));
+    child.on('error', (error) => reject(error));
+    child.on('exit', (code, signal) => {
+      resolve({
+        code: Number(code || 0),
+        signal: signal || '',
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+async function readJsonFileSafe(filePath, fallbackValue) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+async function writeJsonFile(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+async function writeActiveTicketsIndex(config, ticketsMap) {
+  const tickets = ticketsMap && typeof ticketsMap === 'object' ? ticketsMap : {};
+  const rows = Object.values(tickets)
+    .filter((entry) => entry && typeof entry === 'object')
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  const body = [
+    '# Active Notion Tickets',
+    '',
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    rows.length === 0 ? '_No active worktree tickets tracked._' : '| Ticket | Status | Branch | Worktree |',
+    ...(rows.length === 0 ? [] : ['|---|---|---|---|']),
+    ...rows.map((entry) => {
+      const ticket = String(entry.pageId || '').trim() || '(unknown)';
+      const status = String(entry.status || '').trim() || '(unknown)';
+      const branch = String(entry.branch || '').trim() || '(unknown)';
+      const worktree = String(entry.worktreePath || '').trim() || '(unknown)';
+      return `| ${ticket} | ${status} | \`${branch}\` | \`${worktree}\` |`;
+    }),
+    '',
+  ].join('\n');
+  await fs.mkdir(path.dirname(config.activeTicketsFile), { recursive: true });
+  await fs.writeFile(config.activeTicketsFile, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+}
+
+async function cleanupTicketWorktreeTracking(config, pageId, statusText, pageTitle) {
+  if (!config.worktreeMode) {
+    return { tracked: false, removedEntry: false, removedWorktree: false, removeError: '' };
+  }
+  const id = String(pageId || '').trim();
+  if (!id) return { tracked: false, removedEntry: false, removedWorktree: false, removeError: '' };
+
+  const mapData = await readJsonFileSafe(config.worktreeMapFile, { tickets: {} });
+  const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+  const ticketEntry = tickets[id];
+  if (!ticketEntry || typeof ticketEntry !== 'object') {
+    return { tracked: false, removedEntry: false, removedWorktree: false, removeError: '' };
+  }
+
+  let removedWorktree = false;
+  let removeError = '';
+  const worktreePath = String(ticketEntry.worktreePath || '').trim();
+  if (config.worktreeAutoRemoveOnCleanup && worktreePath) {
+    try {
+      const result = await runCommandCapture(
+        'git',
+        ['worktree', 'remove', worktreePath],
+        { cwd: config.rootWorkspace, env: process.env },
+      );
+      if (!result.signal && result.code === 0) {
+        removedWorktree = true;
+      } else {
+        const details = String(result.stderr || result.stdout || '').trim();
+        removeError = details || `exit code ${result.code}${result.signal ? ` signal ${result.signal}` : ''}`;
+      }
+    } catch (error) {
+      removeError = String(error?.message || error || 'unknown git worktree remove error');
+    }
+  }
+
+  const canRemoveEntry = !config.worktreeAutoRemoveOnCleanup || removedWorktree || !worktreePath;
+  if (canRemoveEntry) {
+    delete tickets[id];
+  } else {
+    tickets[id] = {
+      ...ticketEntry,
+      status: String(statusText || '').trim() || ticketEntry.status || '',
+      pageTitle: String(pageTitle || '').trim() || ticketEntry.pageTitle || '',
+      cleanupPending: true,
+      cleanupError: removeError,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  await writeJsonFile(config.worktreeMapFile, { ...mapData, tickets });
+  await writeActiveTicketsIndex(config, tickets);
+  return {
+    tracked: true,
+    removedEntry: canRemoveEntry,
+    removedWorktree,
+    removeError,
+  };
+}
+
+async function writeActiveHandoffsIndex(config, aliasesMap) {
+  const aliases = aliasesMap && typeof aliasesMap === 'object' ? aliasesMap : {};
+  const rows = Object.entries(aliases)
+    .map(([pageId, entry]) => ({
+      pageId,
+      aliasFile: String(entry?.aliasFile || '').trim(),
+      branch: String(entry?.branch || '').trim(),
+      worktreePath: String(entry?.worktreePath || '').trim(),
+      updatedAt: String(entry?.updatedAt || '').trim(),
+    }))
+    .filter((entry) => entry.aliasFile)
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  const body = [
+    '# Active Notion Handoff Aliases',
+    '',
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    rows.length === 0 ? '_No active handoff aliases tracked._' : '| Ticket | Alias file | Branch | Worktree |',
+    ...(rows.length === 0 ? [] : ['|---|---|---|---|']),
+    ...rows.map((entry) => {
+      const ticket = String(entry.pageId || '').trim() || '(unknown)';
+      const aliasFile = String(entry.aliasFile || '').trim() || '(unknown)';
+      const branch = String(entry.branch || '').trim() || '(unknown)';
+      const worktree = String(entry.worktreePath || '').trim() || '(unknown)';
+      return `| ${ticket} | \`${aliasFile}\` | \`${branch}\` | \`${worktree}\` |`;
+    }),
+    '',
+  ].join('\n');
+  await fs.mkdir(path.dirname(config.activeHandoffsFile), { recursive: true });
+  await fs.writeFile(config.activeHandoffsFile, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+}
+
+async function cleanupTicketRootHandoffAlias(config, pageId) {
+  const id = String(pageId || '').trim();
+  if (!id) {
+    return { tracked: false, removedEntry: false, removedAliasFile: false, removeError: '' };
+  }
+  const mapData = await readJsonFileSafe(config.handoffAliasMapFile, { aliases: {} });
+  const aliases = mapData?.aliases && typeof mapData.aliases === 'object' ? mapData.aliases : {};
+  const aliasEntry = aliases[id];
+  if (!aliasEntry || typeof aliasEntry !== 'object') {
+    return { tracked: false, removedEntry: false, removedAliasFile: false, removeError: '' };
+  }
+
+  let removedAliasFile = false;
+  let removeError = '';
+  const aliasPath = path.isAbsolute(String(aliasEntry.aliasPath || '').trim())
+    ? String(aliasEntry.aliasPath || '').trim()
+    : path.resolve(config.rootWorkspace, String(aliasEntry.aliasFile || '').trim());
+  if (aliasPath) {
+    try {
+      await fs.rm(aliasPath, { force: true });
+      removedAliasFile = true;
+    } catch (error) {
+      removeError = String(error?.message || error || 'unknown alias cleanup error');
+    }
+  }
+
+  delete aliases[id];
+  await writeJsonFile(config.handoffAliasMapFile, { ...mapData, aliases });
+  await writeActiveHandoffsIndex(config, aliases);
+  return {
+    tracked: true,
+    removedEntry: true,
+    removedAliasFile,
+    removeError,
+  };
+}
+
 function shouldSkipAsDuplicate(key, dedupeWindowMs) {
   if (!key || dedupeWindowMs <= 0) return false;
 
@@ -851,15 +1130,6 @@ function executeOnMatchCommand(config, context) {
   });
 }
 
-async function readJsonFileSafe(filePath, fallbackValue) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return fallbackValue;
-  }
-}
-
 async function writeStateFile(stateFilePath, payload) {
   await fs.mkdir(path.dirname(stateFilePath), { recursive: true });
   await fs.writeFile(stateFilePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -911,6 +1181,12 @@ function printUsage() {
   print('  --output-dir .notion/intake');
   print('  --cleanup-on-status true|false');
   print('  --cleanup-status "Pushed to dev"');
+  print('  --worktree-mode true|false');
+  print('  --worktree-map-file .notion/worktree-map.json');
+  print('  --active-tickets-file .notion/active-tickets.md');
+  print('  --handoff-alias-map-file .notion/handoff-alias-map.json');
+  print('  --active-handoffs-file .notion/active-handoffs.md');
+  print('  --worktree-auto-remove-on-cleanup true|false');
   print('  --dry-run true|false');
   print('');
 }
@@ -965,6 +1241,41 @@ async function runPollingLoop(config) {
                   `Cleanup for page ${pageId} (${pageTitle}): removed prompt/context files=${cleanupResult.removedFiles}, assets=${cleanupResult.removedAssetDir ? 'yes' : 'no'}.`,
                   colors.dim,
                 );
+              }
+              const worktreeCleanup = await cleanupTicketWorktreeTracking(
+                config,
+                pageId,
+                statusText,
+                pageTitle,
+              );
+              if (worktreeCleanup.tracked) {
+                if (worktreeCleanup.removedEntry) {
+                  print(`Worktree tracking removed for page ${pageId}.`, colors.dim);
+                }
+                if (worktreeCleanup.removedWorktree) {
+                  print(`Worktree removed for page ${pageId}.`, colors.dim);
+                }
+                if (worktreeCleanup.removeError) {
+                  print(
+                    `Worktree cleanup pending for page ${pageId}: ${worktreeCleanup.removeError}`,
+                    colors.yellow,
+                  );
+                }
+              }
+              const rootAliasCleanup = await cleanupTicketRootHandoffAlias(config, pageId);
+              if (rootAliasCleanup.tracked) {
+                if (rootAliasCleanup.removedEntry) {
+                  print(`Root handoff alias tracking removed for page ${pageId}.`, colors.dim);
+                }
+                if (rootAliasCleanup.removedAliasFile) {
+                  print(`Root handoff alias file removed for page ${pageId}.`, colors.dim);
+                }
+                if (rootAliasCleanup.removeError) {
+                  print(
+                    `Root handoff alias cleanup warning for page ${pageId}: ${rootAliasCleanup.removeError}`,
+                    colors.yellow,
+                  );
+                }
               }
             }
           }
@@ -1119,6 +1430,16 @@ async function main(argv = process.argv) {
     `cleanup: ${config.cleanupOnStatus ? `enabled on status '${config.cleanupStatus || '(empty)'}'` : 'disabled'} (output dir: ${config.outputDir})`,
     colors.dim,
   );
+  if (config.worktreeMode) {
+    print(
+      `worktree cleanup: map=${config.worktreeMapFile}, index=${config.activeTicketsFile}, auto-remove=${config.worktreeAutoRemoveOnCleanup ? 'yes' : 'no'}`,
+      colors.dim,
+    );
+    print(
+      `handoff alias cleanup: map=${config.handoffAliasMapFile}, index=${config.activeHandoffsFile}`,
+      colors.dim,
+    );
+  }
   print(`state file: ${config.stateFile}`, colors.dim);
   print(`mode: ${config.dryRun ? 'DRY-RUN' : 'APPLY'}`, config.dryRun ? colors.yellow : colors.green);
 

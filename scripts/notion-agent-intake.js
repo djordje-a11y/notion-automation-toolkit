@@ -54,7 +54,7 @@ const DEFAULT_OUTPUT_DIR = '.notion/intake';
 const DEFAULT_HANDOFF_DIR = '.notion/handoffs';
 const DEFAULT_HANDOFF_ALIAS_FILE = 'notion-handoff.md';
 const DEFAULT_HANDOFF_RETRIGGER_LATEST_ONLY = true;
-const DEFAULT_BRANCH_PREFIX = 'dev/notion';
+const DEFAULT_BRANCH_PREFIX = 'fix';
 const DEFAULT_BRANCH_PREFIX_RULES = 'bugs=fix,epics backlog=feat';
 const DEFAULT_BRANCH_INCLUDE_TICKET_ID = false;
 const DEFAULT_GIT_PREPARE_BRANCH = true;
@@ -1706,6 +1706,28 @@ async function hasGitRef(ref, config) {
   }
 }
 
+async function ensureBranchCandidateNamespaceSafe(branchCandidate, config) {
+  const raw = String(branchCandidate || '').trim();
+  if (!raw) return { branchCandidate: raw, adjusted: false, reason: '' };
+  const firstSlash = raw.indexOf('/');
+  if (firstSlash <= 0) return { branchCandidate: raw, adjusted: false, reason: '' };
+
+  const namespaceHead = raw.slice(0, firstSlash).trim();
+  if (!namespaceHead) return { branchCandidate: raw, adjusted: false, reason: '' };
+
+  const namespaceHeadExists = await hasGitRef(`refs/heads/${namespaceHead}`, config);
+  if (!namespaceHeadExists) {
+    return { branchCandidate: raw, adjusted: false, reason: '' };
+  }
+
+  const adjusted = raw.replace(/\//g, '-');
+  return {
+    branchCandidate: adjusted,
+    adjusted: true,
+    reason: `Namespace '${namespaceHead}' already exists as a branch; using '${adjusted}' to avoid ref collision.`,
+  };
+}
+
 async function remoteBranchExists(remote, branch, config) {
   const output = await runGit(['ls-remote', '--heads', remote, branch], config);
   return Boolean(String(output || '').trim());
@@ -2323,10 +2345,18 @@ async function main(argv = process.argv) {
     config.branchPrefixRules,
     config.branchIncludeTicketId,
   );
-  const branchCandidate = branchResolution.branchCandidate;
+  let branchCandidate = branchResolution.branchCandidate;
   const resolvedPrefix = branchResolution.resolvedPrefix;
   const matchedBranchRule = branchResolution.matchedRule;
   const branchIncludeTicketId = branchResolution.includeTicketId;
+  const branchNamespaceSafety = await ensureBranchCandidateNamespaceSafe(branchCandidate, {
+    ...config,
+    gitWorkingDirectory: String(config.rootWorkspace || process.cwd()),
+  });
+  if (branchNamespaceSafety.adjusted) {
+    branchCandidate = branchNamespaceSafety.branchCandidate;
+    print(`Adjusted branch candidate: ${branchNamespaceSafety.reason}`, colors.yellow);
+  }
   let gitPreparation = null;
 
   if (config.worktreeMode && !config.worktreeResolved) {

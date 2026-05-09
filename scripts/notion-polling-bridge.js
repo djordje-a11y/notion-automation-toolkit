@@ -908,20 +908,25 @@ async function cleanupTicketWorktreeTracking(config, pageId, statusText, pageTit
   let removeError = '';
   const worktreePath = String(ticketEntry.worktreePath || '').trim();
   if (config.worktreeAutoRemoveOnCleanup && worktreePath) {
-    try {
-      const result = await runCommandCapture(
-        'git',
-        ['worktree', 'remove', worktreePath],
-        { cwd: config.rootWorkspace, env: process.env },
-      );
-      if (!result.signal && result.code === 0) {
-        removedWorktree = true;
-      } else {
-        const details = String(result.stderr || result.stdout || '').trim();
-        removeError = details || `exit code ${result.code}${result.signal ? ` signal ${result.signal}` : ''}`;
+    const safetyCheck = await evaluateWorktreeCleanupSafety(config, worktreePath);
+    if (!safetyCheck.safeToRemove) {
+      removeError = safetyCheck.reason || 'worktree removal blocked by safety guard';
+    } else {
+      try {
+        const result = await runCommandCapture(
+          'git',
+          ['worktree', 'remove', worktreePath],
+          { cwd: config.rootWorkspace, env: process.env },
+        );
+        if (!result.signal && result.code === 0) {
+          removedWorktree = true;
+        } else {
+          const details = String(result.stderr || result.stdout || '').trim();
+          removeError = details || `exit code ${result.code}${result.signal ? ` signal ${result.signal}` : ''}`;
+        }
+      } catch (error) {
+        removeError = String(error?.message || error || 'unknown git worktree remove error');
       }
-    } catch (error) {
-      removeError = String(error?.message || error || 'unknown git worktree remove error');
     }
   }
 
@@ -947,6 +952,100 @@ async function cleanupTicketWorktreeTracking(config, pageId, statusText, pageTit
     removedWorktree,
     removeError,
   };
+}
+
+async function evaluateWorktreeCleanupSafety(config, worktreePath) {
+  const statusResult = await runCommandCapture('git', ['-C', worktreePath, 'status', '--porcelain=v1'], {
+    cwd: config.rootWorkspace,
+    env: process.env,
+  });
+  if (statusResult.code !== 0 || statusResult.signal) {
+    const details = String(statusResult.stderr || statusResult.stdout || '').trim();
+    return {
+      safeToRemove: false,
+      reason: details || 'unable to verify worktree status before cleanup',
+    };
+  }
+  if (String(statusResult.stdout || '').trim()) {
+    return {
+      safeToRemove: false,
+      reason: 'worktree has uncommitted changes; auto-remove skipped',
+    };
+  }
+
+  const headResult = await runCommandCapture('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], {
+    cwd: config.rootWorkspace,
+    env: process.env,
+  });
+  if (headResult.code !== 0 || headResult.signal) {
+    const details = String(headResult.stderr || headResult.stdout || '').trim();
+    return {
+      safeToRemove: false,
+      reason: details || 'unable to resolve worktree HEAD before cleanup',
+    };
+  }
+  const headSha = String(headResult.stdout || '').trim();
+  if (!headSha) {
+    return {
+      safeToRemove: false,
+      reason: 'unable to resolve worktree HEAD before cleanup',
+    };
+  }
+
+  const upstreamResult = await runCommandCapture(
+    'git',
+    ['-C', worktreePath, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+    { cwd: config.rootWorkspace, env: process.env },
+  );
+  if (upstreamResult.code === 0 && !upstreamResult.signal) {
+    const upstreamRef = String(upstreamResult.stdout || '').trim();
+    if (upstreamRef) {
+      const aheadResult = await runCommandCapture(
+        'git',
+        ['-C', worktreePath, 'rev-list', '--count', `${upstreamRef}..HEAD`],
+        { cwd: config.rootWorkspace, env: process.env },
+      );
+      const aheadCount = Number.parseInt(String(aheadResult.stdout || '').trim(), 10);
+      if (aheadResult.code !== 0 || aheadResult.signal || !Number.isFinite(aheadCount)) {
+        const details = String(aheadResult.stderr || aheadResult.stdout || '').trim();
+        return {
+          safeToRemove: false,
+          reason: details || `unable to verify push state against ${upstreamRef}`,
+        };
+      }
+      if (aheadCount > 0) {
+        return {
+          safeToRemove: false,
+          reason: `worktree branch is ahead of ${upstreamRef} by ${aheadCount} commit(s); auto-remove skipped`,
+        };
+      }
+      return { safeToRemove: true, reason: '' };
+    }
+  }
+
+  const remoteContainsResult = await runCommandCapture(
+    'git',
+    ['branch', '-r', '--contains', headSha],
+    { cwd: config.rootWorkspace, env: process.env },
+  );
+  if (remoteContainsResult.code !== 0 || remoteContainsResult.signal) {
+    const details = String(remoteContainsResult.stderr || remoteContainsResult.stdout || '').trim();
+    return {
+      safeToRemove: false,
+      reason: details || 'unable to verify whether HEAD exists on any remote branch',
+    };
+  }
+  const remoteContains = String(remoteContainsResult.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trim())
+    .filter(Boolean);
+  if (remoteContains.length === 0) {
+    return {
+      safeToRemove: false,
+      reason: 'worktree HEAD is not on any remote branch; auto-remove skipped',
+    };
+  }
+  return { safeToRemove: true, reason: '' };
 }
 
 async function writeActiveHandoffsIndex(config, aliasesMap) {

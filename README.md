@@ -87,6 +87,7 @@ notion-auto bridge       --workspace /path/to/repo
 notion-auto intake       --workspace /path/to/repo --page-id <notion-page-id> --dispatch
 notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body "Fix is implemented."
 notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body-file ./reply.md --set-status "AI fix ready"
+notion-auto tickets      --workspace /path/to/repo
 ```
 
 Always run/start/stop via `notion-auto` when validating toolkit behavior.
@@ -102,6 +103,7 @@ Per workspace, the toolkit writes:
 - `notion-handoff.md` (stable alias that always points to the latest handoff)
 - `.notion/runtime.json`
 - `.notion/bridge-state.json`
+- `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)
 
 When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Pushed to dev`).
 
@@ -148,3 +150,5 @@ Minimum requirements for this mode:
 - Polling only evaluates pages with matching `NOTION_TRIGGER_STATUS`.
 - Optional filters are supported via assignee IDs and routing key properties.
 - No Notion-side webhook is required for the default flow.
+- Optional multi-ticket mode via git worktrees: set `NOTION_AGENT_WORKTREE_MODE=true`.
+- In worktree mode, cleanup on `NOTION_CLEANUP_STATUS` also updates `.notion/worktree-map.json` and `.notion/active-tickets.md`, and can auto-remove worktrees (`NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP=true`).

@@ -36,6 +36,10 @@ const SCRIPT_MAP = {
     script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-reply-latest.js'),
     prependArgs: [],
   },
+  tickets: {
+    script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-list-tickets.js'),
+    prependArgs: [],
+  },
 };
 
 function printUsage() {
@@ -56,6 +60,7 @@ function printUsage() {
       '  bridge  Run polling bridge directly',
       '  intake  Run intake directly',
       '  reply-latest  Add comment to the latest discussion (fallback: page comment)',
+      '  tickets  List active tracked ticket worktrees',
       '',
       'Examples:',
       '  notion-auto init --workspace /path/to/repo',
@@ -63,6 +68,7 @@ function printUsage() {
       '  notion-auto start --workspace /path/to/repo',
       '  notion-auto stop --workspace /path/to/repo',
       '  notion-auto intake --workspace /path/to/repo --page-id <notion-page-id> --dispatch',
+      '  notion-auto tickets --workspace /path/to/repo',
       '',
     ].join('\n'),
   );

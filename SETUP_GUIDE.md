@@ -76,6 +76,12 @@ Update values in `/path/to/your/repo/.notion.local`:
 
 `NOTION_ASSIGNEE_IDS` is the key guard that makes bridge pick only predefined user(s).
 
+Optional multi-ticket isolation:
+
+- `NOTION_AGENT_WORKTREE_MODE="true"` enables one git worktree per ticket branch.
+- Active worktrees are tracked in `.notion/worktree-map.json`.
+- A quick index is written to `.notion/active-tickets.md`.
+
 ## 5) Seed rules (Monday-like instruction set)
 
 ```bash

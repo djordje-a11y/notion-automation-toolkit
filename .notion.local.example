@@ -49,6 +49,7 @@ NOTION_AGENT_WORKTREE_MODE="false"
 # NOTION_AGENT_WORKTREE_DIR=".notion/worktrees"
 # NOTION_AGENT_WORKTREE_MAP_FILE=".notion/worktree-map.json"
 # NOTION_AGENT_ACTIVE_TICKETS_FILE=".notion/active-tickets.md"
+# NOTION_AGENT_WORKTREE_SHORTCUTS_DIR=".notion/w"
 # Publish named handoff aliases in root workspace: notion-handoff-<first-2-3-branch-words>.md
 # NOTION_AGENT_PUBLISH_ROOT_HANDOFF_ALIAS="true"
 # NOTION_AGENT_HANDOFF_ALIAS_WORDS="3"

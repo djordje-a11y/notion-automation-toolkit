@@ -1083,16 +1083,29 @@ async function writeActiveHandoffsIndex(config, aliasesMap) {
 async function cleanupTicketRootHandoffAlias(config, pageId) {
   const id = String(pageId || '').trim();
   if (!id) {
-    return { tracked: false, removedEntry: false, removedAliasFile: false, removeError: '' };
+    return {
+      tracked: false,
+      removedEntry: false,
+      removedAliasFile: false,
+      removedShortcut: false,
+      removeError: '',
+    };
   }
   const mapData = await readJsonFileSafe(config.handoffAliasMapFile, { aliases: {} });
   const aliases = mapData?.aliases && typeof mapData.aliases === 'object' ? mapData.aliases : {};
   const aliasEntry = aliases[id];
   if (!aliasEntry || typeof aliasEntry !== 'object') {
-    return { tracked: false, removedEntry: false, removedAliasFile: false, removeError: '' };
+    return {
+      tracked: false,
+      removedEntry: false,
+      removedAliasFile: false,
+      removedShortcut: false,
+      removeError: '',
+    };
   }
 
   let removedAliasFile = false;
+  let removedShortcut = false;
   let removeError = '';
   const aliasPath = path.isAbsolute(String(aliasEntry.aliasPath || '').trim())
     ? String(aliasEntry.aliasPath || '').trim()
@@ -1106,6 +1119,22 @@ async function cleanupTicketRootHandoffAlias(config, pageId) {
     }
   }
 
+  const shortcutPathRaw = String(aliasEntry.shortcutPath || '').trim();
+  const shortcutPath = shortcutPathRaw
+    ? path.isAbsolute(shortcutPathRaw)
+      ? shortcutPathRaw
+      : path.resolve(config.rootWorkspace, shortcutPathRaw)
+    : '';
+  if (shortcutPath) {
+    try {
+      await fs.rm(shortcutPath, { recursive: true, force: true });
+      removedShortcut = true;
+    } catch (error) {
+      const detail = String(error?.message || error || 'unknown worktree shortcut cleanup error');
+      removeError = removeError ? `${removeError}; ${detail}` : detail;
+    }
+  }
+
   delete aliases[id];
   await writeJsonFile(config.handoffAliasMapFile, { ...mapData, aliases });
   await writeActiveHandoffsIndex(config, aliases);
@@ -1113,6 +1142,7 @@ async function cleanupTicketRootHandoffAlias(config, pageId) {
     tracked: true,
     removedEntry: true,
     removedAliasFile,
+    removedShortcut,
     removeError,
   };
 }
@@ -1368,6 +1398,9 @@ async function runPollingLoop(config) {
                 }
                 if (rootAliasCleanup.removedAliasFile) {
                   print(`Root handoff alias file removed for page ${pageId}.`, colors.dim);
+                }
+                if (rootAliasCleanup.removedShortcut) {
+                  print(`Worktree shortcut removed for page ${pageId}.`, colors.dim);
                 }
                 if (rootAliasCleanup.removeError) {
                   print(

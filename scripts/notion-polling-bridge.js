@@ -809,6 +809,12 @@ function inferGitlabApiUrl(remoteUrlRaw) {
   }
 }
 
+function buildGitlabAuthHeader(token) {
+  const raw = String(token || '').trim();
+  if (raw.startsWith('glpat-')) return { 'PRIVATE-TOKEN': raw };
+  return { Authorization: `Bearer ${raw}` };
+}
+
 async function gitlabRequest(config, endpointPath, { method = 'GET', body = null } = {}) {
   const endpoint = endpointPath.startsWith('/')
     ? `${config.gitlabApiUrl}${endpointPath}`
@@ -816,7 +822,7 @@ async function gitlabRequest(config, endpointPath, { method = 'GET', body = null
   const response = await fetch(endpoint, {
     method,
     headers: {
-      'PRIVATE-TOKEN': config.gitlabToken,
+      ...buildGitlabAuthHeader(config.gitlabToken),
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,

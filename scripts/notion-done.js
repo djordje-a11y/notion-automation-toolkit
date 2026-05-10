@@ -275,6 +275,12 @@ function inferGitlabApiUrl(remoteUrlRaw) {
   }
 }
 
+function buildGitlabAuthHeader(token) {
+  const raw = String(token || '').trim();
+  if (raw.startsWith('glpat-')) return { 'PRIVATE-TOKEN': raw };
+  return { Authorization: `Bearer ${raw}` };
+}
+
 async function gitlabRequest(config, endpointPath, { method = 'GET', body = null } = {}) {
   const endpoint = endpointPath.startsWith('/')
     ? `${config.gitlabApiUrl}${endpointPath}`
@@ -282,7 +288,7 @@ async function gitlabRequest(config, endpointPath, { method = 'GET', body = null
   const response = await fetch(endpoint, {
     method,
     headers: {
-      'PRIVATE-TOKEN': config.gitlabToken,
+      ...buildGitlabAuthHeader(config.gitlabToken),
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -525,17 +531,23 @@ async function main(argv = process.argv) {
       }
 
       if (config.autoMerge && mrIid) {
-        const mergeResult = await enableGitlabAutoMerge(
-          config,
-          projectRef,
-          mrIid,
-          await runGit(['rev-parse', 'HEAD'], config.workspace),
-        );
-        autoMergeEnabled = true;
-        const detailedMessage = String(mergeResult?.message || '').trim();
-        autoMergeMessage = detailedMessage || 'enabled';
+        try {
+          const mergeResult = await enableGitlabAutoMerge(
+            config,
+            projectRef,
+            mrIid,
+            await runGit(['rev-parse', 'HEAD'], config.workspace),
+          );
+          autoMergeEnabled = true;
+          const detailedMessage = String(mergeResult?.message || '').trim();
+          autoMergeMessage = detailedMessage || 'enabled';
+        } catch (error) {
+          autoMergeEnabled = false;
+          autoMergeMessage = String(error?.message || error || 'unknown auto-merge error');
+        }
       } else if (config.autoMerge && !mrIid) {
-        fail('Auto-merge requested but MR IID is missing from GitLab response.');
+        autoMergeEnabled = false;
+        autoMergeMessage = 'MR IID missing from GitLab response';
       } else if (!config.autoMerge) {
         autoMergeEnabled = false;
         autoMergeMessage = 'disabled by config';

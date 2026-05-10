@@ -69,6 +69,9 @@ NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PW
 # GITLAB_REMOTE="origin"
 # GITLAB_AUTO_MERGE="true"
 # GITLAB_API_URL="https://gitlab.com/api/v4"
+# GITLAB_STATUS_SYNC_ON_MERGE="true"
+# GITLAB_MERGED_NOTION_STATUS="Pushed to dev"
+# GITLAB_SYNC_INTERVAL_SECONDS="30"
 
 # Keep rules in a workspace-local, ignored path under .notion/.
 # Copy toolkit rules once:

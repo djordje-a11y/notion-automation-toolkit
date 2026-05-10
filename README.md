@@ -185,6 +185,20 @@ Disable auto-merge explicitly if needed:
 notion-auto done --auto-merge false
 ```
 
+## Merge To Notion Status Sync
+
+When bridge is running, merged MRs can automatically move the linked Notion ticket to `Pushed to dev`:
+
+- bridge reads tracked ticket branches from `.notion/worktree-map.json`
+- checks GitLab for merged MRs to target branch (`dev` by default)
+- updates ticket status in Notion using `NOTION_STATUS_PROPERTY`
+
+Optional env:
+
+- `GITLAB_STATUS_SYNC_ON_MERGE` (default: `true`)
+- `GITLAB_MERGED_NOTION_STATUS` (default: `Pushed to dev`)
+- `GITLAB_SYNC_INTERVAL_SECONDS` (default: `30`)
+
 ## Generated Files
 
 Per workspace, the toolkit writes:

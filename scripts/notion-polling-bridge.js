@@ -68,6 +68,11 @@ const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
 const DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP = true;
 const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
 const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
+const DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE = true;
+const DEFAULT_GITLAB_TARGET_BRANCH = 'dev';
+const DEFAULT_GITLAB_REMOTE = 'origin';
+const DEFAULT_GITLAB_MERGED_STATUS = 'Pushed to dev';
+const DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS = 30;
 const DEFAULT_ON_MATCH_COMMAND = `node "${path.resolve(
   TOOLKIT_ROOT,
   'scripts/notion-agent-intake.js',
@@ -89,6 +94,8 @@ let dispatchQueueDepth = 0;
 let dispatchInFlight = false;
 let dispatchActivePageId = '';
 let dispatchStartedAt = '';
+let lastGitlabMergeSyncAtMs = 0;
+let gitlabSyncConfigWarningPrinted = false;
 let stopping = false;
 
 function print(message, color = '') {
@@ -254,6 +261,14 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP',
     'NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE',
     'NOTION_AGENT_ACTIVE_HANDOFFS_FILE',
+    'GITLAB_TOKEN',
+    'GITLAB_PROJECT_ID',
+    'GITLAB_API_URL',
+    'GITLAB_TARGET_BRANCH',
+    'GITLAB_REMOTE',
+    'GITLAB_STATUS_SYNC_ON_MERGE',
+    'GITLAB_MERGED_NOTION_STATUS',
+    'GITLAB_SYNC_INTERVAL_SECONDS',
     'NOTION_ENV_FILE',
   ];
 
@@ -545,6 +560,46 @@ function buildRuntimeConfig(args, envValues) {
       ),
       DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP,
     ),
+    gitlabToken: String(process.env.GITLAB_TOKEN || envValues.GITLAB_TOKEN || '').trim(),
+    gitlabProjectId: String(process.env.GITLAB_PROJECT_ID || envValues.GITLAB_PROJECT_ID || '').trim(),
+    gitlabApiUrl: String(process.env.GITLAB_API_URL || envValues.GITLAB_API_URL || '').trim(),
+    gitlabTargetBranch: String(
+      process.env.GITLAB_TARGET_BRANCH ||
+        envValues.GITLAB_TARGET_BRANCH ||
+        DEFAULT_GITLAB_TARGET_BRANCH,
+    ).trim(),
+    gitlabRemote: String(
+      process.env.GITLAB_REMOTE || envValues.GITLAB_REMOTE || DEFAULT_GITLAB_REMOTE,
+    ).trim(),
+    gitlabStatusSyncOnMerge: parseBoolean(
+      getOptionalArg(
+        args,
+        'gitlab-status-sync-on-merge',
+        process.env.GITLAB_STATUS_SYNC_ON_MERGE ||
+          envValues.GITLAB_STATUS_SYNC_ON_MERGE ||
+          String(DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE),
+      ),
+      DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE,
+    ),
+    gitlabMergedNotionStatus: String(
+      process.env.GITLAB_MERGED_NOTION_STATUS ||
+        envValues.GITLAB_MERGED_NOTION_STATUS ||
+        DEFAULT_GITLAB_MERGED_STATUS,
+    ).trim(),
+    gitlabSyncIntervalMs:
+      Math.max(
+        5,
+        parseInteger(
+          getOptionalArg(
+            args,
+            'gitlab-sync-interval-seconds',
+            process.env.GITLAB_SYNC_INTERVAL_SECONDS ||
+              envValues.GITLAB_SYNC_INTERVAL_SECONDS ||
+              String(DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS),
+          ),
+          DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS,
+        ),
+      ) * 1000,
   };
 }
 
@@ -726,6 +781,102 @@ async function notionRequest(config, endpointPath, { method = 'GET', body = null
   return payload || {};
 }
 
+function parseGitlabProjectPathFromRemote(remoteUrlRaw) {
+  const remoteUrl = String(remoteUrlRaw || '').trim();
+  if (!remoteUrl) return '';
+  const sshMatch = remoteUrl.match(/^[^@]+@([^:]+):(.+)$/);
+  if (sshMatch) {
+    return String(sshMatch[2] || '').replace(/\.git$/i, '').trim();
+  }
+  try {
+    const asUrl = new URL(remoteUrl);
+    return String(asUrl.pathname || '').replace(/^\/+/, '').replace(/\.git$/i, '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function inferGitlabApiUrl(remoteUrlRaw) {
+  const remoteUrl = String(remoteUrlRaw || '').trim();
+  if (!remoteUrl) return 'https://gitlab.com/api/v4';
+  const sshMatch = remoteUrl.match(/^[^@]+@([^:]+):(.+)$/);
+  if (sshMatch) return `https://${String(sshMatch[1] || '').trim()}/api/v4`;
+  try {
+    const asUrl = new URL(remoteUrl);
+    return `${asUrl.protocol}//${asUrl.host}/api/v4`;
+  } catch {
+    return 'https://gitlab.com/api/v4';
+  }
+}
+
+async function gitlabRequest(config, endpointPath, { method = 'GET', body = null } = {}) {
+  const endpoint = endpointPath.startsWith('/')
+    ? `${config.gitlabApiUrl}${endpointPath}`
+    : `${config.gitlabApiUrl}/${endpointPath}`;
+  const response = await fetch(endpoint, {
+    method,
+    headers: {
+      'PRIVATE-TOKEN': config.gitlabToken,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const message = payload?.message
+      ? typeof payload.message === 'string'
+        ? payload.message
+        : JSON.stringify(payload.message)
+      : payload?.error || `HTTP ${response.status}`;
+    fail(`GitLab API request failed: ${String(message).slice(0, 500)}`);
+  }
+  return payload || {};
+}
+
+async function updateNotionPageStatus(config, pageId, targetStatus) {
+  const statusValue = String(targetStatus || '').trim();
+  if (!statusValue) return { updated: false, reason: 'empty target status' };
+  const page = await notionRequest(config, `/pages/${encodeURIComponent(pageId)}`, {
+    method: 'GET',
+  });
+  const properties = page?.properties || {};
+  const statusProperty = properties?.[config.statusPropertyName];
+  if (!statusProperty) {
+    return {
+      updated: false,
+      reason: `status property "${config.statusPropertyName}" not found`,
+    };
+  }
+  const currentStatus = resolveStatusText(page, config.statusPropertyName);
+  if (normalize(currentStatus) === normalize(statusValue)) {
+    return { updated: false, reason: 'already set' };
+  }
+  const type = String(statusProperty?.type || '').trim();
+  let payload = null;
+  if (type === 'status') payload = { status: { name: statusValue } };
+  else if (type === 'select') payload = { select: { name: statusValue } };
+  else {
+    return {
+      updated: false,
+      reason: `unsupported status property type "${type}"`,
+    };
+  }
+  await notionRequest(config, `/pages/${encodeURIComponent(pageId)}`, {
+    method: 'PATCH',
+    body: {
+      properties: {
+        [config.statusPropertyName]: payload,
+      },
+    },
+  });
+  return { updated: true, reason: 'updated' };
+}
+
 function resolveQueryTarget(config) {
   const dataSourceId = String(config.dataSourceId || '').trim();
   if (dataSourceId) {
@@ -863,6 +1014,98 @@ async function readJsonFileSafe(filePath, fallbackValue) {
 async function writeJsonFile(filePath, payload) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+async function resolveGitlabProjectRef(config) {
+  const explicit = String(config.gitlabProjectId || '').trim();
+  if (explicit) return explicit;
+  if (!config.gitlabRemote) return '';
+  const remoteResult = await runCommandCapture(
+    'git',
+    ['remote', 'get-url', config.gitlabRemote],
+    { cwd: config.rootWorkspace, env: process.env },
+  );
+  if (remoteResult.signal || remoteResult.code !== 0) return '';
+  const remoteUrl = String(remoteResult.stdout || '').trim();
+  if (!remoteUrl) return '';
+  const inferredPath = parseGitlabProjectPathFromRemote(remoteUrl);
+  if (!inferredPath) return '';
+  if (!config.gitlabApiUrl) {
+    config.gitlabApiUrl = inferGitlabApiUrl(remoteUrl);
+  }
+  return encodeURIComponent(inferredPath);
+}
+
+async function syncMergedMergeRequestsToNotion(config) {
+  if (!config.gitlabStatusSyncOnMerge) {
+    return { attempted: false, checked: 0, updated: 0 };
+  }
+  const now = Date.now();
+  if (now - lastGitlabMergeSyncAtMs < config.gitlabSyncIntervalMs) {
+    return { attempted: false, checked: 0, updated: 0 };
+  }
+  lastGitlabMergeSyncAtMs = now;
+
+  if (!config.gitlabToken || !config.gitlabProjectRef) {
+    if (!gitlabSyncConfigWarningPrinted) {
+      print(
+        'GitLab merge sync disabled: configure GITLAB_TOKEN and GITLAB_PROJECT_ID (or resolvable git remote).',
+        colors.dim,
+      );
+      gitlabSyncConfigWarningPrinted = true;
+    }
+    return { attempted: false, checked: 0, updated: 0 };
+  }
+
+  const mapData = await readJsonFileSafe(config.worktreeMapFile, { tickets: {} });
+  const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+  const entries = Object.values(tickets).filter((entry) => entry && typeof entry === 'object');
+  let checked = 0;
+  let updated = 0;
+
+  for (const entry of entries) {
+    const pageId = String(entry.pageId || '').trim();
+    const branch = String(entry.branch || '').trim();
+    if (!pageId || !branch) continue;
+    checked += 1;
+    try {
+      const mrs = await gitlabRequest(
+        config,
+        `/projects/${config.gitlabProjectRef}/merge_requests?state=merged&source_branch=${encodeURIComponent(
+          branch,
+        )}&target_branch=${encodeURIComponent(config.gitlabTargetBranch)}&order_by=updated_at&sort=desc&per_page=1`,
+        { method: 'GET' },
+      );
+      const mergedList = Array.isArray(mrs) ? mrs : [];
+      if (mergedList.length === 0) continue;
+      const mergedMr = mergedList[0] || {};
+      const mergedAt = String(mergedMr.merged_at || '').trim();
+      const mrIid = String(mergedMr.iid || '').trim();
+      const dedupeKey = `merged-sync|${pageId}|${mrIid}|${mergedAt}`;
+      if (shouldSkipAsDuplicate(dedupeKey, config.dedupeWindowMs)) continue;
+      const statusResult = await updateNotionPageStatus(
+        config,
+        pageId,
+        config.gitlabMergedNotionStatus || config.cleanupStatus,
+      );
+      if (statusResult.updated) {
+        updated += 1;
+        const mrUrl = String(mergedMr.web_url || '').trim();
+        print(
+          `Merge sync: page ${pageId} set to '${config.gitlabMergedNotionStatus}'` +
+            (mrUrl ? ` from MR ${mrUrl}` : '.'),
+          colors.green,
+        );
+      }
+    } catch (error) {
+      print(
+        `Merge sync warning for page ${pageId} (${branch}): ${error?.message || String(error)}`,
+        colors.yellow,
+      );
+    }
+  }
+
+  return { attempted: true, checked, updated };
 }
 
 async function writeActiveTicketsIndex(config, ticketsMap) {
@@ -1320,6 +1563,8 @@ function printUsage() {
   print('  --handoff-alias-map-file .notion/handoff-alias-map.json');
   print('  --active-handoffs-file .notion/active-handoffs.md');
   print('  --worktree-auto-remove-on-cleanup true|false');
+  print('  --gitlab-status-sync-on-merge true|false');
+  print('  --gitlab-sync-interval-seconds 30');
   print('  --dry-run true|false');
   print('');
 }
@@ -1450,6 +1695,14 @@ async function runPollingLoop(config) {
         print(`Matched page ${pageId} (${matchedPageTitle}) -> dispatching local command.`, colors.green);
       }
 
+      const mergeSyncResult = await syncMergedMergeRequestsToNotion(config);
+      if (mergeSyncResult.attempted && mergeSyncResult.updated > 0) {
+        print(
+          `Merge sync complete: checked=${mergeSyncResult.checked} updated=${mergeSyncResult.updated}`,
+          colors.dim,
+        );
+      }
+
       cursorIso = nextCursorIso;
       await writeStateFile(config.stateFile, {
         startedAt: String(state?.startedAt || new Date().toISOString()),
@@ -1531,6 +1784,10 @@ async function main(argv = process.argv) {
 
   const loadedEnv = await loadNotionEnvValues(args);
   const config = buildRuntimeConfig(args, loadedEnv.values);
+  config.gitlabProjectRef = await resolveGitlabProjectRef(config);
+  if (!config.gitlabApiUrl) {
+    config.gitlabApiUrl = 'https://gitlab.com/api/v4';
+  }
 
   print(`notion token: ${maskSecret(config.token)} (masked)`, colors.dim);
   print(`workspace: ${process.cwd()}`, colors.dim);
@@ -1575,6 +1832,22 @@ async function main(argv = process.argv) {
       `handoff alias cleanup: map=${config.handoffAliasMapFile}, index=${config.activeHandoffsFile}`,
       colors.dim,
     );
+  }
+  if (config.gitlabStatusSyncOnMerge) {
+    print(
+      `merge->notion sync: enabled target='${config.gitlabMergedNotionStatus}' target-branch='${config.gitlabTargetBranch}' interval=${Math.round(
+        config.gitlabSyncIntervalMs / 1000,
+      )}s`,
+      colors.dim,
+    );
+    if (!config.gitlabToken || !config.gitlabProjectRef) {
+      print(
+        'merge->notion sync prerequisites missing: set GITLAB_TOKEN and GITLAB_PROJECT_ID (or make GITLAB_REMOTE resolvable).',
+        colors.yellow,
+      );
+    }
+  } else {
+    print('merge->notion sync: disabled', colors.dim);
   }
   print(`state file: ${config.stateFile}`, colors.dim);
   print(`mode: ${config.dryRun ? 'DRY-RUN' : 'APPLY'}`, config.dryRun ? colors.yellow : colors.green);

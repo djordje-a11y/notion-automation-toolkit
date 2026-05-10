@@ -158,6 +158,7 @@ source ~/.bashrc
 - verifies clean working tree
 - pushes current branch (`git push -u origin HEAD` when upstream branch does not exist)
 - opens (or reuses) GitLab MR targeting `dev` by default
+- enables GitLab auto-merge (when pipeline succeeds)
 
 ```bash
 notion-auto done
@@ -174,8 +175,15 @@ Required env for MR creation:
 - `GITLAB_TOKEN`
 - optional: `GITLAB_TARGET_BRANCH` (default: `dev`)
 - optional: `GITLAB_REMOTE` (default: `origin`)
+- optional: `GITLAB_AUTO_MERGE` (default: `true`)
 - optional: `GITLAB_PROJECT_ID` (if project cannot be inferred from remote URL)
 - optional: `GITLAB_API_URL` (default inferred from remote, fallback `https://gitlab.com/api/v4`)
+
+Disable auto-merge explicitly if needed:
+
+```bash
+notion-auto done --auto-merge false
+```
 
 ## Generated Files
 

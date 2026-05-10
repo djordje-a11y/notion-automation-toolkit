@@ -6,6 +6,7 @@
  * - verifies git state
  * - pushes current branch (git push -u origin HEAD when branch has no remote)
  * - opens GitLab MR toward target branch (default: dev)
+ * - enables GitLab auto-merge (merge when pipeline succeeds)
  */
 
 import process from 'process';
@@ -16,6 +17,7 @@ import fs from 'fs/promises';
 const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_TARGET_BRANCH = 'dev';
 const DEFAULT_GITLAB_API_URL = 'https://gitlab.com/api/v4';
+const DEFAULT_AUTO_MERGE = true;
 const DEFAULT_LOCAL_ENV_FILES = ['.notion.local', '.env.local', 'scripts/.notion.local'];
 
 const colors = {
@@ -180,6 +182,7 @@ async function loadLocalEnvValues(args, workspace, rootWorkspace) {
     'GITLAB_API_URL',
     'GITLAB_TARGET_BRANCH',
     'GITLAB_REMOTE',
+    'GITLAB_AUTO_MERGE',
     'NOTION_AGENT_GIT_REMOTE',
   ];
   const values = {};
@@ -305,6 +308,20 @@ function buildDefaultMrTitle(branchName, targetBranch) {
   return `${branchName} -> ${targetBranch}`;
 }
 
+async function enableGitlabAutoMerge(config, projectRef, mrIid, currentHeadSha = '') {
+  if (!mrIid) fail('Cannot enable auto-merge: merge request IID is missing.');
+  const body = {
+    auto_merge: true,
+    merge_when_pipeline_succeeds: true,
+  };
+  const headSha = String(currentHeadSha || '').trim();
+  if (headSha) body.sha = headSha;
+  return gitlabRequest(config, `/projects/${projectRef}/merge_requests/${mrIid}/merge`, {
+    method: 'PUT',
+    body,
+  });
+}
+
 function printUsage() {
   print('');
   print('notion done', colors.cyan);
@@ -320,6 +337,7 @@ function printUsage() {
   print('  --env-file <path>');
   print('  --mr-title "<title>"');
   print('  --mr-description "<text>"');
+  print(`  --auto-merge true|false (default ${DEFAULT_AUTO_MERGE ? 'true' : 'false'})`);
   print('  --push-only true|false');
   print('  --dry-run true|false');
   print('  --json true|false');
@@ -328,6 +346,7 @@ function printUsage() {
   print('  GITLAB_TOKEN (required unless --push-only=true or --dry-run=true)');
   print(`  GITLAB_TARGET_BRANCH (optional; default ${DEFAULT_TARGET_BRANCH})`);
   print(`  GITLAB_REMOTE (optional; default ${DEFAULT_GIT_REMOTE})`);
+  print(`  GITLAB_AUTO_MERGE (optional; default ${DEFAULT_AUTO_MERGE ? 'true' : 'false'})`);
   print('  GITLAB_PROJECT_ID (optional; fallback uses remote URL path)');
   print('  GITLAB_API_URL (optional; fallback inferred from remote, then gitlab.com)');
   print('');
@@ -374,6 +393,16 @@ async function main(argv = process.argv) {
     ),
     mrTitle: getOptionalArg(args, 'mr-title'),
     mrDescription: getOptionalArg(args, 'mr-description'),
+    autoMerge: parseBoolean(
+      getOptionalArg(
+        args,
+        'auto-merge',
+        process.env.GITLAB_AUTO_MERGE ||
+          loadedEnv.values.GITLAB_AUTO_MERGE ||
+          String(DEFAULT_AUTO_MERGE),
+      ),
+      DEFAULT_AUTO_MERGE,
+    ),
     pushOnly: parseBoolean(getOptionalArg(args, 'push-only', 'false'), false),
     dryRun: parseBoolean(getOptionalArg(args, 'dry-run', 'false'), false),
     json: parseBoolean(getOptionalArg(args, 'json', 'false'), false),
@@ -424,6 +453,8 @@ async function main(argv = process.argv) {
   let mrUrl = '';
   let mrCreated = false;
   let mrIid = null;
+  let autoMergeEnabled = null;
+  let autoMergeMessage = '';
 
   if (config.dryRun) {
     print(`[dry-run] workspace: ${config.workspace}`, colors.dim);
@@ -460,6 +491,11 @@ async function main(argv = process.argv) {
         `[dry-run] MR create: source=${currentBranch} target=${config.targetBranch} title="${title}"`,
         colors.yellow,
       );
+      if (config.autoMerge) {
+        print('[dry-run] MR auto-merge: enable when pipeline succeeds', colors.yellow);
+      } else {
+        print('[dry-run] MR auto-merge: skipped (--auto-merge false)', colors.dim);
+      }
     } else {
       const existing = await gitlabRequest(
         config,
@@ -487,6 +523,23 @@ async function main(argv = process.argv) {
         mrIid = Number(created?.iid || 0) || null;
         mrCreated = true;
       }
+
+      if (config.autoMerge && mrIid) {
+        const mergeResult = await enableGitlabAutoMerge(
+          config,
+          projectRef,
+          mrIid,
+          await runGit(['rev-parse', 'HEAD'], config.workspace),
+        );
+        autoMergeEnabled = true;
+        const detailedMessage = String(mergeResult?.message || '').trim();
+        autoMergeMessage = detailedMessage || 'enabled';
+      } else if (config.autoMerge && !mrIid) {
+        fail('Auto-merge requested but MR IID is missing from GitLab response.');
+      } else if (!config.autoMerge) {
+        autoMergeEnabled = false;
+        autoMergeMessage = 'disabled by config';
+      }
     }
   }
 
@@ -500,6 +553,11 @@ async function main(argv = process.argv) {
     pushCommand,
     targetBranch: config.targetBranch,
     pushOnly: config.pushOnly,
+    autoMerge: config.pushOnly ? null : config.autoMerge,
+    autoMergeEnabled:
+      config.pushOnly || config.dryRun || !config.autoMerge ? null : autoMergeEnabled,
+    autoMergeMessage:
+      config.pushOnly || config.dryRun ? null : autoMergeMessage || null,
     dryRun: config.dryRun,
     mrCreated: config.pushOnly ? null : config.dryRun ? null : mrCreated,
     mrIid: config.pushOnly ? null : mrIid,
@@ -523,6 +581,18 @@ async function main(argv = process.argv) {
       print(`MR: ${output.mrUrl}`, colors.green);
     } else {
       print('MR: created but URL missing from API response', colors.yellow);
+    }
+    if (!config.dryRun) {
+      if (!config.autoMerge) {
+        print('Auto-merge: skipped (--auto-merge false)', colors.dim);
+      } else if (autoMergeEnabled) {
+        print('Auto-merge: enabled (when pipeline succeeds)', colors.green);
+      } else {
+        print(
+          `Auto-merge: failed (${autoMergeMessage || 'unknown reason'})`,
+          colors.yellow,
+        );
+      }
     }
   } else {
     print('MR: skipped (--push-only true)', colors.dim);

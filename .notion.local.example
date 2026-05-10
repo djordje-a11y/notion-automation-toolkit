@@ -67,6 +67,7 @@ NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PW
 # GITLAB_PROJECT_ID="group%2Fproject" # or numeric project ID
 # GITLAB_TARGET_BRANCH="dev"
 # GITLAB_REMOTE="origin"
+# GITLAB_AUTO_MERGE="true"
 # GITLAB_API_URL="https://gitlab.com/api/v4"
 
 # Keep rules in a workspace-local, ignored path under .notion/.

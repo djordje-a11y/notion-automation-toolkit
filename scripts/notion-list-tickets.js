@@ -164,6 +164,7 @@ function printUsage() {
   print('  --copy-paths true|false (print copy/paste cd commands only)');
   print('  --paths true|false (alias of --copy-paths)');
   print('  --checkout true|false (interactive selector, then open shell in chosen worktree)');
+  print('  --checkout --run (checkout + run NOTION_TICKETS_AFTER_CHECKOUT_COMMAND)');
   print('  --after-checkout-command "<command>" (run command in selected worktree)');
   print('');
   print('Env:');
@@ -226,7 +227,7 @@ function pickWithFzf(rows) {
   return { ok: true, selected: rows[picked - 1] };
 }
 
-async function runCheckoutSelector(rows) {
+async function runCheckoutSelector(rows, runAfterCheckout = false) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     fail('Interactive checkout requires a TTY terminal.');
   }
@@ -248,7 +249,7 @@ async function runCheckoutSelector(rows) {
     if (!selectedPath) {
       fail('Selected ticket has no worktree path.');
     }
-    return launchSelectedWorktree(selectedPath);
+    return launchSelectedWorktree(selectedPath, runAfterCheckout);
   }
 
   print('');
@@ -275,15 +276,15 @@ async function runCheckoutSelector(rows) {
     fail('Selected ticket has no worktree path.');
   }
 
-  return launchSelectedWorktree(selectedPath);
+  return launchSelectedWorktree(selectedPath, runAfterCheckout);
 }
 
-async function launchSelectedWorktree(selectedPath) {
+async function launchSelectedWorktree(selectedPath, runAfterCheckout = false) {
   const afterCheckoutCommand = String(
     process.env.NOTION_TICKETS_AFTER_CHECKOUT_COMMAND || '',
   ).trim();
 
-  if (afterCheckoutCommand) {
+  if (runAfterCheckout && afterCheckoutCommand) {
     print(`Running after-checkout command in ${selectedPath}: ${afterCheckoutCommand}`, colors.cyan);
     await new Promise((resolve, reject) => {
       const child = spawn('bash', ['-lc', afterCheckoutCommand], {
@@ -399,7 +400,8 @@ async function main(argv = process.argv) {
   }
 
   if (checkoutMode) {
-    return runCheckoutSelector(rows);
+    const runAfterCheckout = parseBoolean(args.run, false);
+    return runCheckoutSelector(rows, runAfterCheckout);
   }
 
   if (copyPathsOnly) {

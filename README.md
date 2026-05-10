@@ -6,6 +6,8 @@ This toolkit is intentionally **outside product repos** and writes local runtime
 
 For full first-time setup, see `SETUP_GUIDE.md`.
 
+Planned next-step automation ideas are tracked in `TODO.md`.
+
 ## What You Get
 
 - One CLI for all operations: `notion-auto`
@@ -90,6 +92,7 @@ notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --
 notion-auto tickets      --workspace /path/to/repo
 notion-auto tickets      --checkout
 notion-auto tickets      --paths true
+notion-auto done
 ```
 
 Always run/start/stop via `notion-auto` when validating toolkit behavior.
@@ -140,6 +143,32 @@ Persist across sessions (bash):
 echo 'export NOTION_TICKETS_AFTER_CHECKOUT_COMMAND="npm run dev"' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+## Task Done Flow (Step 1)
+
+`notion-auto done` helps with the end-of-task git handoff:
+
+- verifies clean working tree
+- pushes current branch (`git push -u origin HEAD` when upstream branch does not exist)
+- opens (or reuses) GitLab MR targeting `dev` by default
+
+```bash
+notion-auto done
+```
+
+Dry-run first:
+
+```bash
+notion-auto done --dry-run true
+```
+
+Required env for MR creation:
+
+- `GITLAB_TOKEN`
+- optional: `GITLAB_TARGET_BRANCH` (default: `dev`)
+- optional: `GITLAB_REMOTE` (default: `origin`)
+- optional: `GITLAB_PROJECT_ID` (if project cannot be inferred from remote URL)
+- optional: `GITLAB_API_URL` (default inferred from remote, fallback `https://gitlab.com/api/v4`)
 
 ## Generated Files
 

@@ -60,6 +60,13 @@ NOTION_AGENT_WORKTREE_MODE="false"
 NOTION_ON_MATCH_COMMAND='notion-auto intake --workspace "$PWD" --page-id "$NOTION_TRIGGER_PAGE_ID" --dispatch'
 NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PWD" "Read $NOTION_AGENT_IDE_HANDOFF_FILE and return required sections."'
 
+# Optional GitLab done-flow defaults (used by `notion-auto done`):
+# GITLAB_TOKEN="glpat-..."
+# GITLAB_PROJECT_ID="group%2Fproject" # or numeric project ID
+# GITLAB_TARGET_BRANCH="dev"
+# GITLAB_REMOTE="origin"
+# GITLAB_API_URL="https://gitlab.com/api/v4"
+
 # Keep rules in a workspace-local, ignored path under .notion/.
 # Copy toolkit rules once:
 #   cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md .notion/agent-rules.md

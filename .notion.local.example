@@ -58,6 +58,8 @@ NOTION_AGENT_WORKTREE_MODE="false"
 # NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP="true"
 
 NOTION_ON_MATCH_COMMAND='notion-auto intake --workspace "$PWD" --page-id "$NOTION_TRIGGER_PAGE_ID" --dispatch'
+# Cursor does not reliably support auto chat creation via CLI; keep this disabled.
+NOTION_AGENT_CREATE_CHAT="false"
 NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PWD" "Read $NOTION_AGENT_IDE_HANDOFF_FILE and return required sections."'
 
 # Optional GitLab done-flow defaults (used by `notion-auto done`):

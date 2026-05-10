@@ -61,8 +61,9 @@ const DEFAULT_GIT_PREPARE_BRANCH = true;
 const DEFAULT_GIT_BASE_BRANCH = 'acceptance';
 const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_GIT_REQUIRE_CLEAN_WORKTREE = true;
-const DEFAULT_AGENT_CREATE_CHAT = true;
+const DEFAULT_AGENT_CREATE_CHAT = false;
 const DEFAULT_AGENT_CREATE_CHAT_COMMAND = '$HOME/.local/bin/cursor-agent create-chat';
+const DEFAULT_AGENT_CREATE_CHAT_TIMEOUT_MS = 15000;
 const DEFAULT_AGENT_UNSET_CURSOR_API_KEY = true;
 const DEFAULT_AGENT_HEADLESS_PRINT = true;
 const DEFAULT_IDE_HANDOFF = true;
@@ -1860,23 +1861,118 @@ function extractCursorChatId(text) {
   return String(token || '').trim();
 }
 
+async function runCreateChatCommand(config, command) {
+  const timeoutMsRaw = Number.parseInt(
+    String(process.env.NOTION_AGENT_CREATE_CHAT_TIMEOUT_MS || DEFAULT_AGENT_CREATE_CHAT_TIMEOUT_MS),
+    10,
+  );
+  const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? timeoutMsRaw : DEFAULT_AGENT_CREATE_CHAT_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const child = spawn('bash', ['-lc', command], {
+      cwd: process.cwd(),
+      env: buildCursorAgentChildEnv(config),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const finishWithChatId = (chatId) => {
+      if (settled) return;
+      settled = true;
+      if (child.pid) {
+        try {
+          process.kill(child.pid, 'SIGTERM');
+        } catch {
+          // process already ended
+        }
+      }
+      resolve(chatId);
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      const chatId = extractCursorChatId(stdout);
+      if (chatId) {
+        finishWithChatId(chatId);
+        return;
+      }
+      settled = true;
+      try {
+        if (child.pid) process.kill(child.pid, 'SIGKILL');
+      } catch {
+        // ignore
+      }
+      const details = String(stderr || stdout || '').trim();
+      reject(
+        new Error(
+          `Cursor chat creation timed out after ${timeoutMs}ms` +
+            (details ? `: ${details.slice(0, 300)}` : ''),
+        ),
+      );
+    }, timeoutMs);
+
+    const inspectForChatId = () => {
+      const candidate = extractCursorChatId(stdout);
+      if (candidate) {
+        clearTimeout(timer);
+        finishWithChatId(candidate);
+      }
+    };
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk || '');
+      inspectForChatId();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk || '');
+    });
+
+    child.on('error', (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+
+    child.on('exit', (code, signal) => {
+      if (settled) return;
+      clearTimeout(timer);
+      const chatId = extractCursorChatId(stdout);
+      if (chatId) {
+        settled = true;
+        resolve(chatId);
+        return;
+      }
+      settled = true;
+      const details = String(stderr || stdout || '').trim();
+      if (signal) {
+        reject(
+          new Error(
+            `Failed to create Cursor chat session: terminated by ${signal}` +
+              (details ? ` (${details.slice(0, 300)})` : ''),
+          ),
+        );
+        return;
+      }
+      reject(
+        new Error(
+          `Failed to create Cursor chat session: ${
+            details || `exit code ${code}`
+          }`,
+        ),
+      );
+    });
+  });
+}
+
 async function createCursorChatId(config) {
   const command = String(config.agentCreateChatCommand || '').trim();
   if (!command) return '';
 
-  const result = await runCommandCapture('bash', ['-lc', command], {
-    cwd: process.cwd(),
-    env: buildCursorAgentChildEnv(config),
-  });
-  if (result.signal) {
-    fail(`Chat creation command terminated by signal: ${result.signal}`);
-  }
-  if (result.code !== 0) {
-    const details = String(result.stderr || result.stdout || '').trim() || `exit code ${result.code}`;
-    fail(`Failed to create Cursor chat session: ${details}`);
-  }
-
-  const chatId = extractCursorChatId(result.stdout);
+  const chatId = await runCreateChatCommand(config, command);
   if (!chatId) {
     fail(
       'Cursor chat creation did not return a chat ID. ' +

@@ -53,6 +53,13 @@ This ensures local ignore entries for `.notion/`, `.notion.local`, and `notion-h
 cp /path/to/notion-automation-toolkit/.notion.local.example /path/to/repo/.notion.local
 ```
 
+Keep auto chat creation disabled (recommended default):
+
+```bash
+# in /path/to/repo/.notion.local
+NOTION_AGENT_CREATE_CHAT="false"
+```
+
 4. Seed workspace-local agent rules (ignored from git):
 
 ```bash

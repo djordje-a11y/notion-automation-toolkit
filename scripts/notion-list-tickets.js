@@ -360,7 +360,7 @@ async function main(argv = process.argv) {
   const aliases = aliasMapData?.aliases && typeof aliasMapData.aliases === 'object' ? aliasMapData.aliases : {};
   const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
   const rows = sortTickets(
-    Object.values(tickets).filter((entry) => entry && typeof entry === 'object'),
+    Object.values(tickets).filter((entry) => entry && typeof entry === 'object' && !entry.cleanupPending),
   );
 
   if (outputJson) {

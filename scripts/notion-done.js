@@ -314,6 +314,9 @@ function buildDefaultMrTitle(branchName, targetBranch) {
   return `${branchName} -> ${targetBranch}`;
 }
 
+const AUTO_MERGE_MAX_RETRIES = 4;
+const AUTO_MERGE_RETRY_DELAY_MS = 10_000;
+
 async function enableGitlabAutoMerge(config, projectRef, mrIid, currentHeadSha = '') {
   if (!mrIid) fail('Cannot enable auto-merge: merge request IID is missing.');
   const body = {
@@ -322,10 +325,27 @@ async function enableGitlabAutoMerge(config, projectRef, mrIid, currentHeadSha =
   };
   const headSha = String(currentHeadSha || '').trim();
   if (headSha) body.sha = headSha;
-  return gitlabRequest(config, `/projects/${projectRef}/merge_requests/${mrIid}/merge`, {
-    method: 'PUT',
-    body,
-  });
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= AUTO_MERGE_MAX_RETRIES; attempt++) {
+    try {
+      return await gitlabRequest(config, `/projects/${projectRef}/merge_requests/${mrIid}/merge`, {
+        method: 'PUT',
+        body,
+      });
+    } catch (error) {
+      lastError = error;
+      const msg = String(error?.message || '').toLowerCase();
+      const retryable = msg.includes('cannot be merged') || msg.includes('405');
+      if (!retryable || attempt === AUTO_MERGE_MAX_RETRIES) break;
+      print(
+        `Auto-merge attempt ${attempt}/${AUTO_MERGE_MAX_RETRIES} failed (pipeline not ready), retrying in ${AUTO_MERGE_RETRY_DELAY_MS / 1000}s...`,
+        colors.dim,
+      );
+      await new Promise((resolve) => setTimeout(resolve, AUTO_MERGE_RETRY_DELAY_MS));
+    }
+  }
+  throw lastError;
 }
 
 function printUsage() {

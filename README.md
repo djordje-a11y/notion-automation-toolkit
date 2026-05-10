@@ -117,6 +117,30 @@ sudo apt install fzf
 
 Without `fzf`, `--checkout` falls back to numeric selection.
 
+Optional: run a command immediately after selecting a worktree (instead of opening a shell):
+
+```bash
+notion-auto tickets --checkout --after-checkout-command "npm run dev"
+```
+
+or configure once via env:
+
+```bash
+export NOTION_TICKETS_AFTER_CHECKOUT_COMMAND="npm run dev"
+notion-auto tickets --checkout
+```
+
+Important:
+
+- `NOTION_TICKETS_AFTER_CHECKOUT_COMMAND` is read from your shell environment (not from `.notion.local`).
+
+Persist across sessions (bash):
+
+```bash
+echo 'export NOTION_TICKETS_AFTER_CHECKOUT_COMMAND="npm run dev"' >> ~/.bashrc
+source ~/.bashrc
+```
+
 ## Generated Files
 
 Per workspace, the toolkit writes:

@@ -164,6 +164,10 @@ function printUsage() {
   print('  --copy-paths true|false (print copy/paste cd commands only)');
   print('  --paths true|false (alias of --copy-paths)');
   print('  --checkout true|false (interactive selector, then open shell in chosen worktree)');
+  print('  --after-checkout-command "<command>" (run command in selected worktree)');
+  print('');
+  print('Env:');
+  print('  NOTION_TICKETS_AFTER_CHECKOUT_COMMAND="<command>"');
   print('');
 }
 
@@ -244,18 +248,7 @@ async function runCheckoutSelector(rows) {
     if (!selectedPath) {
       fail('Selected ticket has no worktree path.');
     }
-    const shellBinary = String(process.env.SHELL || 'bash').trim() || 'bash';
-    print(`Opening shell in: ${selectedPath}`, colors.cyan);
-    await new Promise((resolve, reject) => {
-      const child = spawn(shellBinary, {
-        cwd: selectedPath,
-        env: process.env,
-        stdio: 'inherit',
-      });
-      child.on('error', reject);
-      child.on('exit', () => resolve());
-    });
-    return 0;
+    return launchSelectedWorktree(selectedPath);
   }
 
   print('');
@@ -280,6 +273,38 @@ async function runCheckoutSelector(rows) {
   const selectedPath = String(selected.worktreePath || '').trim();
   if (!selectedPath) {
     fail('Selected ticket has no worktree path.');
+  }
+
+  return launchSelectedWorktree(selectedPath);
+}
+
+async function launchSelectedWorktree(selectedPath) {
+  const afterCheckoutCommand = String(
+    process.env.NOTION_TICKETS_AFTER_CHECKOUT_COMMAND || '',
+  ).trim();
+
+  if (afterCheckoutCommand) {
+    print(`Running after-checkout command in ${selectedPath}: ${afterCheckoutCommand}`, colors.cyan);
+    await new Promise((resolve, reject) => {
+      const child = spawn('bash', ['-lc', afterCheckoutCommand], {
+        cwd: selectedPath,
+        env: process.env,
+        stdio: 'inherit',
+      });
+      child.on('error', reject);
+      child.on('exit', (code, signal) => {
+        if (signal) {
+          reject(new Error(`after-checkout command terminated by signal ${signal}`));
+          return;
+        }
+        if (Number(code || 0) !== 0) {
+          reject(new Error(`after-checkout command failed with exit code ${code}`));
+          return;
+        }
+        resolve();
+      });
+    });
+    return 0;
   }
 
   const shellBinary = String(process.env.SHELL || 'bash').trim() || 'bash';
@@ -321,6 +346,14 @@ async function main(argv = process.argv) {
     args['copy-paths'] !== undefined ? args['copy-paths'] : args.paths,
     false,
   );
+  const afterCheckoutCommand = String(
+    args['after-checkout-command'] ||
+      process.env.NOTION_TICKETS_AFTER_CHECKOUT_COMMAND ||
+      '',
+  ).trim();
+  if (afterCheckoutCommand) {
+    process.env.NOTION_TICKETS_AFTER_CHECKOUT_COMMAND = afterCheckoutCommand;
+  }
   const mapData = await readJsonFileSafe(mapFile, { tickets: {} });
   const aliasMapData = await readJsonFileSafe(aliasMapFile, { aliases: {} });
   const aliases = aliasMapData?.aliases && typeof aliasMapData.aliases === 'object' ? aliasMapData.aliases : {};

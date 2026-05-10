@@ -116,6 +116,7 @@ Notes:
 
 - `--workspace` is optional for `tickets`; when omitted, current repo/root workspace is auto-detected.
 - `--checkout` opens an interactive selector and drops you into the selected worktree shell.
+- `--checkout --run` same as above but also runs `NOTION_TICKETS_AFTER_CHECKOUT_COMMAND` (e.g. `npm run dev`).
 - `--paths true` prints copy/paste `cd` commands for all active worktrees.
 
 Optional (recommended) for arrow-key selector UX:
@@ -151,18 +152,22 @@ echo 'export NOTION_TICKETS_AFTER_CHECKOUT_COMMAND="npm run dev"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## Task Done Flow (Step 1)
+## Task Done Flow
 
-`notion-auto done` helps with the end-of-task git handoff:
-
-- verifies clean working tree
-- pushes current branch (`git push -u origin HEAD` when upstream branch does not exist)
-- opens (or reuses) GitLab MR targeting `dev` by default
-- enables GitLab auto-merge (when pipeline succeeds)
+When a ticket is finished, run from inside the worktree:
 
 ```bash
 notion-auto done
 ```
+
+This performs the full end-of-task handoff in one command:
+
+1. verifies clean working tree (fails if uncommitted changes)
+2. pushes current branch (`git push -u origin HEAD` when remote branch does not exist)
+3. creates (or reuses) GitLab MR targeting `dev`
+4. enables GitLab auto-merge (merge when pipeline succeeds)
+
+Auto-merge is **enabled by default**. If auto-merge fails (e.g. merge conflicts with `dev`), it warns but does not block — push and MR creation still succeed.
 
 Dry-run first:
 
@@ -170,20 +175,25 @@ Dry-run first:
 notion-auto done --dry-run true
 ```
 
-Required env for MR creation:
+Required env (add to project `.notion.local`):
 
-- `GITLAB_TOKEN`
+- `GITLAB_TOKEN` — GitLab PAT (`glpat-...`) or OAuth2 token (from `glab auth login`); both are supported
 - optional: `GITLAB_TARGET_BRANCH` (default: `dev`)
 - optional: `GITLAB_REMOTE` (default: `origin`)
 - optional: `GITLAB_AUTO_MERGE` (default: `true`)
-- optional: `GITLAB_PROJECT_ID` (if project cannot be inferred from remote URL)
-- optional: `GITLAB_API_URL` (default inferred from remote, fallback `https://gitlab.com/api/v4`)
+- optional: `GITLAB_PROJECT_ID` (auto-inferred from git remote if omitted)
+- optional: `GITLAB_API_URL` (auto-inferred from git remote, fallback `https://gitlab.com/api/v4`)
 
-Disable auto-merge explicitly if needed:
+Disable auto-merge:
 
 ```bash
 notion-auto done --auto-merge false
 ```
+
+Token notes:
+
+- PAT tokens (`glpat-...`) do not expire frequently; create at [gitlab.com/-/user_settings/personal_access_tokens](https://gitlab.com/-/user_settings/personal_access_tokens) with `api` scope.
+- OAuth2 tokens (from `glab auth login`) expire periodically; re-run `glab auth login` and copy the new token from `~/.config/glab-cli/config.yml` when expired.
 
 ## Merge To Notion Status Sync
 

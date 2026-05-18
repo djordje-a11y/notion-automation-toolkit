@@ -9,13 +9,13 @@ NOTION_DATABASE_ID="replace-with-database-id"
 # NOTION_API_VERSION="2025-09-03"
 
 # Polling bridge trigger
-NOTION_TRIGGER_STATUS="AI work in progress"
+NOTION_TRIGGER_STATUS="In Progress"
 NOTION_STATUS_PROPERTY="Status"
 NOTION_POLL_INTERVAL_SECONDS="15"
 NOTION_DEDUPE_SECONDS="120"
 NOTION_SINGLE_TICKET_MODE="true"
 NOTION_CLEANUP_ON_STATUS="true"
-NOTION_CLEANUP_STATUS="Pushed to dev"
+NOTION_CLEANUP_STATUS="Fix Deployed Dev"
 
 # Optional user scoping
 NOTION_ASSIGNEE_PROPERTY="Assignee"
@@ -70,7 +70,7 @@ NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PW
 # GITLAB_AUTO_MERGE="true"
 # GITLAB_API_URL="https://gitlab.com/api/v4"
 # GITLAB_STATUS_SYNC_ON_MERGE="true"
-# GITLAB_MERGED_NOTION_STATUS="Pushed to dev"
+# GITLAB_MERGED_NOTION_STATUS="Fix Deployed Dev"
 # GITLAB_SYNC_INTERVAL_SECONDS="30"
 
 # Keep rules in a workspace-local, ignored path under .notion/.

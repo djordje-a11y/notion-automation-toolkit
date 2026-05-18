@@ -34,7 +34,7 @@ When a Notion ticket matches trigger rules (status + assignee), the toolkit auto
 At closeout, toolkit can also:
 
 - post reply to latest Notion discussion
-- set status (for example to `AI fix ready`) in one command
+- set status (for example to `Fix Deployed Dev`) in one command
 
 ---
 
@@ -144,7 +144,7 @@ Over sprint scale, this compounds into meaningful developer throughput gains and
 - Local ignore entries enforced via `init` (`.notion/`, `.notion.local`, `notion-handoff.md`)
 - Optional single-ticket mode to avoid parallel dispatch noise
 - Dedupe and polling-state tracking
-- Cleanup policy to remove stale intake assets after `Pushed to dev`
+- Cleanup policy to remove stale intake assets after `Fix Deployed Dev`
 - Worktree cleanup safety guard:
   - never auto-removes dirty worktrees
   - never auto-removes branches with unpushed commits

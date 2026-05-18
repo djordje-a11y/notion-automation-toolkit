@@ -32,7 +32,7 @@ This creates friction, inconsistency, and avoidable delays.
 - Fast task switching CLI (`notion-auto tickets --checkout`) with interactive selection
 - Optional branch preparation from configured base branch
 - One-command Notion closeout reply + status transition
-- Automatic cleanup of local intake assets when ticket reaches `Pushed to dev`
+- Automatic cleanup of local intake assets when ticket reaches `Fix Deployed Dev`
 
 ---
 

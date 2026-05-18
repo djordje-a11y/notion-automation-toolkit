@@ -95,7 +95,7 @@ notion-auto stop         --workspace /path/to/repo
 notion-auto bridge       --workspace /path/to/repo
 notion-auto intake       --workspace /path/to/repo --page-id <notion-page-id> --dispatch
 notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body "Fix is implemented."
-notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body-file ./reply.md --set-status "AI fix ready"
+notion-auto reply-latest --workspace /path/to/repo --page-id <notion-page-id> --body-file ./reply.md --set-status "Fix Deployed Dev"
 notion-auto tickets      --workspace /path/to/repo
 notion-auto tickets      --checkout
 notion-auto tickets      --paths true
@@ -197,7 +197,7 @@ Token notes:
 
 ## Merge To Notion Status Sync
 
-When bridge is running, merged MRs can automatically move the linked Notion ticket to `Pushed to dev`:
+When bridge is running, merged MRs can automatically move the linked Notion ticket to `Fix Deployed Dev`:
 
 - bridge reads tracked ticket branches from `.notion/worktree-map.json`
 - checks GitLab for merged MRs to target branch (`dev` by default)
@@ -206,7 +206,7 @@ When bridge is running, merged MRs can automatically move the linked Notion tick
 Optional env:
 
 - `GITLAB_STATUS_SYNC_ON_MERGE` (default: `true`)
-- `GITLAB_MERGED_NOTION_STATUS` (default: `Pushed to dev`)
+- `GITLAB_MERGED_NOTION_STATUS` (default: `Fix Deployed Dev`)
 - `GITLAB_SYNC_INTERVAL_SECONDS` (default: `30`)
 
 ## Generated Files
@@ -222,7 +222,7 @@ Per workspace, the toolkit writes:
 - `.notion/bridge-state.json`
 - `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)
 
-When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Pushed to dev`).
+When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Fix Deployed Dev`).
 
 In Cursor Agent chat, attach the stable alias:
 

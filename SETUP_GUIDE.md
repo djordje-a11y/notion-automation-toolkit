@@ -120,10 +120,10 @@ When a page in `NOTION_DATABASE_ID` changes to `NOTION_TRIGGER_STATUS` and match
 
 ## 8) Monday-style closeout
 
-When implementation is done and staged, agent can post reply and move status in one command:
+When implementation is done and staged, run the done-flow to push, create MR, and enable auto-merge:
 
 ```bash
-notion-auto reply-latest --workspace /path/to/your/repo --page-id <notion-page-id> --body-file ./reply.md --set-status "AI fix ready"
+notion-auto done
 ```
 
 If your status property is not named `Status`, add:

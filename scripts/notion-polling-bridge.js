@@ -61,7 +61,7 @@ const DEFAULT_STATE_FILE = '.notion/bridge-state.json';
 const DEFAULT_INITIAL_LOOKBACK_SECONDS = 0;
 const DEFAULT_AGENT_OUTPUT_DIR = '.notion/intake';
 const DEFAULT_CLEANUP_ON_STATUS = true;
-const DEFAULT_CLEANUP_STATUS = 'Pushed to dev';
+const DEFAULT_CLEANUP_STATUS = 'Fix Deployed Dev';
 const DEFAULT_WORKTREE_MODE = false;
 const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
 const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
@@ -71,7 +71,7 @@ const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
 const DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE = true;
 const DEFAULT_GITLAB_TARGET_BRANCH = 'dev';
 const DEFAULT_GITLAB_REMOTE = 'origin';
-const DEFAULT_GITLAB_MERGED_STATUS = 'Pushed to dev';
+const DEFAULT_GITLAB_MERGED_STATUS = 'Fix Deployed Dev';
 const DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS = 30;
 const DEFAULT_ON_MATCH_COMMAND = `node "${path.resolve(
   TOOLKIT_ROOT,
@@ -1562,7 +1562,7 @@ function printUsage() {
   print('  --initial-lookback-seconds 0');
   print('  --output-dir .notion/intake');
   print('  --cleanup-on-status true|false');
-  print('  --cleanup-status "Pushed to dev"');
+  print('  --cleanup-status "Fix Deployed Dev"');
   print('  --worktree-mode true|false');
   print('  --worktree-map-file .notion/worktree-map.json');
   print('  --active-tickets-file .notion/active-tickets.md');

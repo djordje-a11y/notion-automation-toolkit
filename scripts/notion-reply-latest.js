@@ -389,7 +389,7 @@ function printUsage() {
   print('  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body "<text>"');
   print('  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body-file ./reply.md');
   print(
-    '  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body-file ./reply.md --set-status "AI fix ready"',
+    '  notion-auto reply-latest --workspace /path/to/repo --page-id <id> --body-file ./reply.md --set-status "Fix Deployed Dev"',
   );
   print('');
   print('Options:');

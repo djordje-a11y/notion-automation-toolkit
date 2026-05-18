@@ -23,4 +23,4 @@ Completion and handoff rules (mandatory when user asks to commit):
     2) commit staged changes only (do not auto-add unrelated files)
     3) push branch (`git push -u origin HEAD` if no upstream, else `git push origin HEAD`)
     4) post Notion update using toolkit command:
-       `notion-auto reply-latest --workspace "$PWD" --page-id "<page-id>" --body-file "<reply-file.md>" --set-status "AI fix ready"`
+       `notion-auto done`

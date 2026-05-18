@@ -1,67 +1,23 @@
 # Notion Automation Toolkit TODO
 
-## Next Major Automation: GitLab MR + Notion Status Sync
+## GitLab MR + Notion Status Sync
 
-### Goal
+### Completed
 
-When implementation is complete, reduce final manual steps by automating:
+- [x] GitLab integration config (`GITLAB_TOKEN`, `GITLAB_TARGET_BRANCH`, auto-inferred project path)
+- [x] `notion-auto done` command: push, create/reuse MR, enable auto-merge
+- [x] Auto-merge retry with delay when pipeline is not ready (4 retries, 10s apart)
+- [x] Auto-merge failure is non-fatal (warns but doesn't halt)
+- [x] OAuth2 Bearer + PAT (`glpat-`) token support
+- [x] Merge detection via polling bridge (queries GitLab for merged MRs)
+- [x] Notion status sync on merge (sets ticket to `Fix Deployed Dev`)
+- [x] Cleanup flow triggers on status change (worktree removal, handoff/alias cleanup)
+- [x] Filter cleanup-pending tickets from `tickets --checkout` list
+- [x] Docs updated for done-flow, merge sync, and env config
 
-1. local push + MR creation to `dev`
-2. Notion status update to `Pushed to dev` only after merge to `dev`
-3. existing cleanup flow (worktree + temp artifacts) via status transition
+### Pending
 
-### Proposed UX
-
-- In agent chat, user says a keyword such as `task done`.
-- Toolkit performs:
-  - validate working tree state
-  - push branch (`git push -u origin HEAD` when needed)
-  - create merge request targeting `dev`
-  - post MR link back into Notion ticket comments
-
-Then, after merge:
-
-- GitLab webhook (or scheduled poll fallback) detects merge to `dev`
-- Toolkit updates Notion ticket status to `Pushed to dev`
-- Existing cleanup automation removes safe worktrees and temporary intake assets
-
-### Implementation Tasks
-
-- [ ] Define explicit completion trigger contract (`task done` keywords + guardrails)
-- [ ] Add GitLab integration config:
-  - [ ] `GITLAB_TOKEN`
-  - [ ] `GITLAB_PROJECT_ID`
-  - [ ] `GITLAB_TARGET_BRANCH` (default `dev`)
-  - [ ] optional webhook secret
-- [ ] Add command to perform done-flow:
-  - [ ] ensure branch is clean and commit state is valid
-  - [ ] push current branch (`-u` when branch has no upstream)
-  - [ ] open MR to `dev`
-  - [ ] enable GitLab "Set to auto-merge when pipeline succeeds" on created MR
-  - [ ] write MR URL to Notion comment
-- [ ] Add merge detection:
-  - [ ] webhook endpoint handler or polling bridge extension
-  - [ ] verify MR merged to `dev`
-  - [ ] map MR -> Notion ticket page id
-- [ ] Add Notion status sync on merge:
-  - [ ] set status to `Pushed to dev`
-  - [ ] optional comment "Merged to dev: <MR URL>"
-- [ ] Ensure idempotency and safe retries across:
-  - [ ] duplicate trigger phrases
-  - [ ] duplicate webhooks
-  - [ ] partial failures (push ok / MR fail / Notion fail)
-- [ ] Update docs with operator setup and troubleshooting
-
-### Auto-Merge Conflict Recovery
-
-When `notion-auto done` enables auto-merge but it fails due to merge conflicts:
-
-- [ ] Detect conflict failure in `notion-auto done` output
-- [ ] Instruct the agent to resolve the conflict (rebase/merge onto target branch) and push
-- [ ] Automatically re-run `notion-auto done` after conflict resolution to retry auto-merge
-- [ ] Add agent rule: on auto-merge conflict, resolve and retry without user intervention
-
-### Post MR Link to Notion
+#### Post MR Link to Notion
 
 After MR is created or reused by `notion-auto done`:
 
@@ -69,12 +25,14 @@ After MR is created or reused by `notion-auto done`:
 - [ ] Post a comment on the Notion ticket with the MR URL (e.g. "MR opened: <url>")
 - [ ] Skip if a comment with the same MR URL already exists (idempotency)
 
-### Open Decisions
+#### Auto-Merge Conflict Recovery
 
-- [ ] Prefer webhook-first or poll-first for GitLab merge detection
-- [ ] Final keyword(s): `task done`, `done`, or explicit command only
-- [ ] Whether MR title/description is generated from handoff metadata
-- [ ] Whether to auto-request reviewers/labels
+When `notion-auto done` enables auto-merge but it fails due to merge conflicts:
+
+- [ ] Detect conflict failure in `notion-auto done` output
+- [ ] Instruct the agent to resolve the conflict (rebase/merge onto target branch) and push
+- [ ] Automatically re-run `notion-auto done` after conflict resolution to retry auto-merge
+- [ ] Add agent rule: on auto-merge conflict, resolve and retry without user intervention
 
 ## Daily Activity Reporting (Slack)
 

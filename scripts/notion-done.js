@@ -314,6 +314,20 @@ function buildDefaultMrTitle(branchName, targetBranch) {
   return `${branchName} -> ${targetBranch}`;
 }
 
+async function buildDefaultMrDescription(config, currentBranch) {
+  try {
+    const logOutput = await runGit(
+      ['log', `${config.remote}/${config.targetBranch}..HEAD`, '--pretty=format:- %s'],
+      config.workspace,
+    );
+    const lines = String(logOutput || '').trim();
+    if (lines) return `## Commits\n\n${lines}`;
+  } catch {
+    // fall through
+  }
+  return '';
+}
+
 const AUTO_MERGE_MAX_RETRIES = 4;
 const AUTO_MERGE_RETRY_DELAY_MS = 10_000;
 
@@ -510,7 +524,7 @@ async function main(argv = process.argv) {
     }
 
     const title = config.mrTitle || buildDefaultMrTitle(currentBranch, config.targetBranch);
-    const description = config.mrDescription || 'Automated MR created by notion-auto done.';
+    const description = config.mrDescription || await buildDefaultMrDescription(config, currentBranch);
 
     if (config.dryRun) {
       print(

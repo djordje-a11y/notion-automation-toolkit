@@ -1577,22 +1577,19 @@ function printUsage() {
 
 async function runPollingLoop(config) {
   const state = await readJsonFileSafe(config.stateFile, {});
-  let cursorIso = String(state?.cursor || '').trim();
-  if (!cursorIso) {
-    cursorIso = isoWithLookback(config.initialLookbackSeconds);
-    await writeStateFile(config.stateFile, {
-      startedAt: new Date().toISOString(),
-      pid: process.pid,
-      cursor: cursorIso,
-      lastPollAt: null,
-      lastError: null,
-      running: true,
-      databaseId: config.databaseId,
-      dataSourceId: config.dataSourceId || null,
-      triggerStatus: config.triggerStatus,
-    });
-    print(`Initialized polling cursor at ${cursorIso}`, colors.dim);
-  }
+  let cursorIso = new Date().toISOString();
+  await writeStateFile(config.stateFile, {
+    startedAt: new Date().toISOString(),
+    pid: process.pid,
+    cursor: cursorIso,
+    lastPollAt: null,
+    lastError: null,
+    running: true,
+    databaseId: config.databaseId,
+    dataSourceId: config.dataSourceId || null,
+    triggerStatus: config.triggerStatus,
+  });
+  print(`Polling cursor set to now: ${cursorIso}`, colors.dim);
 
   while (!stopping) {
     const pollStartedAt = new Date().toISOString();

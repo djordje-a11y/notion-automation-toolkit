@@ -118,6 +118,13 @@ Notes:
 - `--checkout` opens an interactive selector and drops you into the selected worktree shell.
 - `--checkout --run` same as above but also runs `NOTION_TICKETS_AFTER_CHECKOUT_COMMAND` (e.g. `npm run dev`).
 - `--paths true` prints copy/paste `cd` commands for all active worktrees.
+- `--prune` removes stale entries from `.notion/worktree-map.json` when the worktree folder no longer exists (also cleans related handoff aliases and runs `git worktree prune`).
+
+If you manually deleted worktrees to free disk/memory, run:
+
+```bash
+notion-auto tickets --prune
+```
 
 Optional (recommended) for arrow-key selector UX:
 

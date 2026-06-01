@@ -13,6 +13,8 @@ import readline from 'readline';
 
 const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
 const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
+const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
+const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
 
 const colors = {
   reset: '\x1b[0m',
@@ -143,6 +145,166 @@ async function readJsonFileSafe(filePath, fallbackValue) {
   }
 }
 
+async function writeJsonFile(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const body = JSON.stringify(data, null, 2);
+  await fs.writeFile(filePath, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveWorkspaceFile(workspace, raw, fallback) {
+  const value = String(raw || fallback).trim();
+  if (!value) return path.resolve(workspace, fallback);
+  if (path.isAbsolute(value)) return value;
+  return path.resolve(workspace, value);
+}
+
+async function writeActiveTicketsIndex(activeTicketsFile, ticketsMap) {
+  const tickets = ticketsMap && typeof ticketsMap === 'object' ? ticketsMap : {};
+  const rows = Object.values(tickets)
+    .filter((entry) => entry && typeof entry === 'object')
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  const body = [
+    '# Active Notion Tickets',
+    '',
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    rows.length === 0 ? '_No active worktree tickets tracked._' : '| Ticket | Status | Branch | Worktree |',
+    ...(rows.length === 0 ? [] : ['|---|---|---|---|']),
+    ...rows.map((entry) => {
+      const ticket = String(entry.pageId || '').trim() || '(unknown)';
+      const status = String(entry.status || '').trim() || '(unknown)';
+      const branch = String(entry.branch || '').trim() || '(unknown)';
+      const worktree = String(entry.worktreePath || '').trim() || '(unknown)';
+      return `| ${ticket} | ${status} | \`${branch}\` | \`${worktree}\` |`;
+    }),
+    '',
+  ].join('\n');
+  await fs.mkdir(path.dirname(activeTicketsFile), { recursive: true });
+  await fs.writeFile(activeTicketsFile, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+}
+
+async function writeActiveHandoffsIndex(activeHandoffsFile, aliasesMap) {
+  const aliases = aliasesMap && typeof aliasesMap === 'object' ? aliasesMap : {};
+  const rows = Object.values(aliases)
+    .filter((entry) => entry && typeof entry === 'object')
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  const body = [
+    '# Active Notion Handoff Aliases',
+    '',
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    rows.length === 0
+      ? '_No active root handoff aliases tracked._'
+      : '| Ticket | Alias File | Worktree Shortcut |',
+    ...(rows.length === 0 ? [] : ['|---|---|---|']),
+    ...rows.map((entry) => {
+      const ticket = String(entry.pageId || '').trim() || '(unknown)';
+      const aliasFile = String(entry.aliasFile || '').trim() || '(unknown)';
+      const shortcut = String(entry.shortcutPath || '').trim() || '(none)';
+      return `| ${ticket} | \`${aliasFile}\` | \`${shortcut}\` |`;
+    }),
+    '',
+  ].join('\n');
+  await fs.mkdir(path.dirname(activeHandoffsFile), { recursive: true });
+  await fs.writeFile(activeHandoffsFile, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+}
+
+async function pruneStaleTicketTracking({
+  workspace,
+  mapFile,
+  aliasMapFile,
+  activeTicketsFile,
+  activeHandoffsFile,
+  mapData,
+  aliasMapData,
+}) {
+  const tickets =
+    mapData?.tickets && typeof mapData.tickets === 'object' ? { ...mapData.tickets } : {};
+  const aliases =
+    aliasMapData?.aliases && typeof aliasMapData.aliases === 'object'
+      ? { ...aliasMapData.aliases }
+      : {};
+  const removed = [];
+
+  for (const [pageId, entry] of Object.entries(tickets)) {
+    if (!entry || typeof entry !== 'object') {
+      delete tickets[pageId];
+      removed.push({ pageId, reason: 'invalid map entry' });
+      continue;
+    }
+
+    const worktreePath = String(entry.worktreePath || '').trim();
+    if (worktreePath && (await pathExists(worktreePath))) continue;
+
+    removed.push({
+      pageId,
+      branch: String(entry.branch || '').trim(),
+      title: String(entry.pageTitle || '').trim(),
+      worktreePath: worktreePath || '(missing)',
+      reason: worktreePath ? 'worktree path missing on disk' : 'no worktree path recorded',
+    });
+
+    const aliasEntry = aliases[pageId];
+    if (aliasEntry && typeof aliasEntry === 'object') {
+      const aliasPath = path.isAbsolute(String(aliasEntry.aliasPath || '').trim())
+        ? String(aliasEntry.aliasPath || '').trim()
+        : path.resolve(workspace, String(aliasEntry.aliasFile || '').trim());
+      if (aliasPath) {
+        try {
+          await fs.rm(aliasPath, { force: true });
+        } catch {
+          // non-fatal
+        }
+      }
+
+      const shortcutPathRaw = String(aliasEntry.shortcutPath || '').trim();
+      const shortcutPath = shortcutPathRaw
+        ? path.isAbsolute(shortcutPathRaw)
+          ? shortcutPathRaw
+          : path.resolve(workspace, shortcutPathRaw)
+        : '';
+      if (shortcutPath) {
+        try {
+          await fs.rm(shortcutPath, { recursive: true, force: true });
+        } catch {
+          // non-fatal
+        }
+      }
+    }
+
+    delete tickets[pageId];
+    delete aliases[pageId];
+  }
+
+  if (removed.length > 0) {
+    await writeJsonFile(mapFile, { ...mapData, tickets });
+    await writeJsonFile(aliasMapFile, { ...aliasMapData, aliases });
+    await writeActiveTicketsIndex(activeTicketsFile, tickets);
+    await writeActiveHandoffsIndex(activeHandoffsFile, aliases);
+  }
+
+  try {
+    spawnSync('git', ['worktree', 'prune'], {
+      cwd: workspace,
+      env: process.env,
+      stdio: 'ignore',
+    });
+  } catch {
+    // non-fatal
+  }
+
+  return { removed, remainingCount: Object.keys(tickets).length };
+}
+
 function sortTickets(entries) {
   return [...entries].sort((left, right) =>
     String(right?.updatedAt || '').localeCompare(String(left?.updatedAt || '')),
@@ -165,6 +327,7 @@ function printUsage() {
   print('  --paths true|false (alias of --copy-paths)');
   print('  --checkout true|false (interactive selector, then open shell in chosen worktree)');
   print('  --checkout --run (checkout + run NOTION_TICKETS_AFTER_CHECKOUT_COMMAND)');
+  print('  --prune (remove map entries whose worktree paths no longer exist on disk)');
   print('  --after-checkout-command "<command>" (run command in selected worktree)');
   print('');
   print('Env:');
@@ -342,6 +505,7 @@ async function main(argv = process.argv) {
   const mapFile = resolveMapPath(workspace, args['map-file']);
   const aliasMapFile = resolveAliasMapPath(workspace, args['alias-map-file']);
   const outputJson = parseBoolean(args.json, false);
+  const pruneMode = parseBoolean(args.prune, false);
   const checkoutMode = parseBoolean(args.checkout, false);
   const copyPathsOnly = parseBoolean(
     args['copy-paths'] !== undefined ? args['copy-paths'] : args.paths,
@@ -357,8 +521,50 @@ async function main(argv = process.argv) {
   }
   const mapData = await readJsonFileSafe(mapFile, { tickets: {} });
   const aliasMapData = await readJsonFileSafe(aliasMapFile, { aliases: {} });
+  const activeTicketsFile = resolveWorkspaceFile(
+    workspace,
+    args['active-tickets-file'],
+    DEFAULT_ACTIVE_TICKETS_FILE,
+  );
+  const activeHandoffsFile = resolveWorkspaceFile(
+    workspace,
+    args['active-handoffs-file'],
+    DEFAULT_ACTIVE_HANDOFFS_FILE,
+  );
   const aliases = aliasMapData?.aliases && typeof aliasMapData.aliases === 'object' ? aliasMapData.aliases : {};
   const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+
+  if (pruneMode) {
+    const pruneResult = await pruneStaleTicketTracking({
+      workspace,
+      mapFile,
+      aliasMapFile,
+      activeTicketsFile,
+      activeHandoffsFile,
+      mapData,
+      aliasMapData,
+    });
+    print(`workspace: ${workspace}`, colors.dim);
+    print(`map file: ${mapFile}`, colors.dim);
+    if (pruneResult.removed.length === 0) {
+      print('Prune complete: no stale ticket entries found.', colors.green);
+    } else {
+      print(`Prune complete: removed ${pruneResult.removed.length} stale entr${pruneResult.removed.length === 1 ? 'y' : 'ies'}.`, colors.green);
+      for (const entry of pruneResult.removed) {
+        const branch = entry.branch ? ` | ${entry.branch}` : '';
+        const title = entry.title ? ` | ${entry.title}` : '';
+        print(`- ${entry.pageId}${branch}${title}`, colors.yellow);
+        print(`  reason: ${entry.reason}`, colors.dim);
+        if (entry.worktreePath && entry.worktreePath !== '(missing)') {
+          print(`  path: ${entry.worktreePath}`, colors.dim);
+        }
+      }
+    }
+    print(`Remaining tracked tickets: ${pruneResult.remainingCount}`, colors.dim);
+    print('');
+    return 0;
+  }
+
   const rows = sortTickets(
     Object.values(tickets).filter((entry) => entry && typeof entry === 'object' && !entry.cleanupPending),
   );

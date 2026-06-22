@@ -33,7 +33,7 @@ NOTION_AGENT_BRANCH_PREFIX="fix"
 NOTION_AGENT_BRANCH_PREFIX_RULES="bugs=fix,epics backlog=feat"
 NOTION_AGENT_BRANCH_INCLUDE_TICKET_ID="false"
 NOTION_AGENT_GIT_PREPARE_BRANCH="true"
-NOTION_AGENT_GIT_BASE_BRANCH="acceptance"
+NOTION_AGENT_GIT_BASE_BRANCH="dev"
 NOTION_AGENT_GIT_REMOTE="origin"
 NOTION_AGENT_GIT_REQUIRE_CLEAN_WORKTREE="true"
 
@@ -46,6 +46,12 @@ NOTION_AGENT_SECTION_PROPERTY="Type"
 NOTION_AGENT_DOWNLOAD_ATTACHMENTS="true"
 NOTION_AGENT_ATTACHMENTS_MAX="20"
 NOTION_AGENT_WORKTREE_MODE="false"
+# IDE-specific worktree layout (Cursor keeps nested worktrees; JetBrains IDEs use external dirs).
+# NOTION_AGENT_IDE="cursor"
+# NOTION_AGENT_IDE="webstorm"
+# Per-IDE overrides (optional; {repo} expands to the workspace folder name):
+# NOTION_AGENT_WORKTREE_DIR_BY_IDE="cursor=.notion/worktrees,webstorm=../{repo}-worktrees"
+# Explicit override (wins over IDE defaults):
 # NOTION_AGENT_WORKTREE_DIR=".notion/worktrees"
 # NOTION_AGENT_WORKTREE_MAP_FILE=".notion/worktree-map.json"
 # NOTION_AGENT_ACTIVE_TICKETS_FILE=".notion/active-tickets.md"

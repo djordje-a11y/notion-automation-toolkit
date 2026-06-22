@@ -135,6 +135,26 @@ sudo apt install fzf
 
 Without `fzf`, `--checkout` falls back to numeric selection.
 
+### IDE-specific worktree directories
+
+By default, worktrees are created inside the repo at `.notion/worktrees/` (works well with Cursor).
+
+JetBrains IDEs (WebStorm, IntelliJ, etc.) do not reliably discover nested worktrees. Set your IDE in `.notion.local`:
+
+```bash
+NOTION_AGENT_IDE="webstorm"
+```
+
+With `NOTION_AGENT_IDE=webstorm`, new worktrees go to a sibling folder outside the repo: `../{repo-name}-worktrees/`. Cursor behavior is unchanged unless you set `NOTION_AGENT_IDE="cursor"` or an explicit override.
+
+Optional per-IDE overrides:
+
+```bash
+NOTION_AGENT_WORKTREE_DIR_BY_IDE="cursor=.notion/worktrees,webstorm=../{repo}-worktrees"
+```
+
+`NOTION_AGENT_WORKTREE_DIR` still wins over both when you need a single explicit path.
+
 Optional: run a command immediately after selecting a worktree (instead of opening a shell):
 
 ```bash

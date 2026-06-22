@@ -81,6 +81,7 @@ Optional multi-ticket isolation:
 - `NOTION_AGENT_WORKTREE_MODE="true"` enables one git worktree per ticket branch.
 - Active worktrees are tracked in `.notion/worktree-map.json`.
 - A quick index is written to `.notion/active-tickets.md`.
+- `NOTION_AGENT_IDE="webstorm"` (or `jetbrains`) places new worktrees outside the repo (`../{repo}-worktrees/`) so WebStorm's Git Worktrees UI works. Cursor users can omit this or set `NOTION_AGENT_IDE="cursor"` to keep `.notion/worktrees/`.
 
 ## 5) Seed rules (Monday-like instruction set)
 

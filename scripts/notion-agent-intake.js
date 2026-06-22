@@ -14,6 +14,7 @@ import process from 'process';
 import fs from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
+import { DEFAULT_WORKTREE_DIR, resolveWorktreeDir } from './notion-ide-worktree-config.js';
 
 function resolveWorkspaceFromArgv(argv = process.argv, envWorkspace = '') {
   const envCandidate = String(envWorkspace || '').trim();
@@ -58,7 +59,7 @@ const DEFAULT_BRANCH_PREFIX = 'fix';
 const DEFAULT_BRANCH_PREFIX_RULES = 'bugs=fix,epics backlog=feat';
 const DEFAULT_BRANCH_INCLUDE_TICKET_ID = false;
 const DEFAULT_GIT_PREPARE_BRANCH = true;
-const DEFAULT_GIT_BASE_BRANCH = 'acceptance';
+const DEFAULT_GIT_BASE_BRANCH = 'dev';
 const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_GIT_REQUIRE_CLEAN_WORKTREE = true;
 const DEFAULT_AGENT_CREATE_CHAT = false;
@@ -72,7 +73,6 @@ const DEFAULT_SECTION_PROPERTY = 'Type';
 const DEFAULT_DOWNLOAD_ATTACHMENTS = true;
 const DEFAULT_ATTACHMENTS_MAX = 20;
 const DEFAULT_WORKTREE_MODE = false;
-const DEFAULT_WORKTREE_DIR = '.notion/worktrees';
 const DEFAULT_WORKTREE_MAP_FILE = '.notion/worktree-map.json';
 const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
 const DEFAULT_WORKTREE_SHORTCUTS_DIR = '.notion/w';
@@ -108,11 +108,10 @@ const DEFAULT_RULES = [
   '',
   'Branching and merge conflict rules (CRITICAL):',
   '- NEVER push directly to `dev`, `acceptance`, or `main`. These are protected branches. All changes go through MRs only.',
-  '- NEVER checkout, commit to, or run `git push` targeting `dev`, `acceptance`, or `main`. If you find yourself on one of these branches, STOP immediately.',
-  '- Branches are created from `acceptance`, NOT from `dev`. Never pull or rebase from `dev`.',
+  '- Never commit on `dev`, `acceptance`, or `main`. Checkout `dev`, pull latest, then create your feature branch from there.',
+  '- Branches are created from `dev`: checkout `dev`, pull latest, then create the feature branch.',
   '- MRs target `dev`. If the MR has merge conflicts with `dev`, do NOT merge/rebase `dev` into the fix branch.',
   '- Instead: create a temporary merge branch (e.g. `merge/<original-branch>-to-dev`), merge both the fix branch and `dev` into it, resolve conflicts there, push the merge branch to `dev`, and leave the original fix branch untouched.',
-  '- This prevents pulling potentially broken code from `dev` into a clean fix branch.',
 ].join('\n');
 
 const colors = {
@@ -373,7 +372,9 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_DOWNLOAD_ATTACHMENTS',
     'NOTION_AGENT_ATTACHMENTS_MAX',
     'NOTION_AGENT_WORKTREE_MODE',
+    'NOTION_AGENT_IDE',
     'NOTION_AGENT_WORKTREE_DIR',
+    'NOTION_AGENT_WORKTREE_DIR_BY_IDE',
     'NOTION_AGENT_WORKTREE_MAP_FILE',
     'NOTION_AGENT_ACTIVE_TICKETS_FILE',
     'NOTION_AGENT_WORKTREE_SHORTCUTS_DIR',
@@ -429,12 +430,31 @@ function buildRuntimeConfig(args, envValues) {
     );
   }
 
+  const rootWorkspace = getOptionalArg(
+    args,
+    'root-workspace',
+    process.env.NOTION_ROOT_WORKSPACE || envValues.NOTION_ROOT_WORKSPACE || process.cwd(),
+  );
+  const ide = getOptionalArg(
+    args,
+    'ide',
+    process.env.NOTION_AGENT_IDE || envValues.NOTION_AGENT_IDE || '',
+  );
+  const worktreeDirResolution = resolveWorktreeDir({
+    workspacePath: rootWorkspace,
+    ide,
+    explicitWorktreeDir:
+      process.env.NOTION_AGENT_WORKTREE_DIR ||
+      envValues.NOTION_AGENT_WORKTREE_DIR ||
+      getOptionalArg(args, 'worktree-dir', ''),
+    worktreeDirByIde:
+      process.env.NOTION_AGENT_WORKTREE_DIR_BY_IDE ||
+      envValues.NOTION_AGENT_WORKTREE_DIR_BY_IDE ||
+      getOptionalArg(args, 'worktree-dir-by-ide', ''),
+  });
+
   return {
-    rootWorkspace: getOptionalArg(
-      args,
-      'root-workspace',
-      process.env.NOTION_ROOT_WORKSPACE || envValues.NOTION_ROOT_WORKSPACE || process.cwd(),
-    ),
+    rootWorkspace,
     token,
     apiUrl: String(process.env.NOTION_API_URL || envValues.NOTION_API_URL || DEFAULT_API_URL).replace(/\/$/, ''),
     apiVersion: String(process.env.NOTION_API_VERSION || envValues.NOTION_API_VERSION || DEFAULT_API_VERSION).trim(),
@@ -626,10 +646,13 @@ function buildRuntimeConfig(args, envValues) {
       ),
       false,
     ),
-    worktreeDir: getOptionalArg(
+    ide: worktreeDirResolution.ide,
+    worktreeDir: worktreeDirResolution.worktreeDir,
+    worktreeDirSource: worktreeDirResolution.source,
+    worktreeDirByIde: getOptionalArg(
       args,
-      'worktree-dir',
-      process.env.NOTION_AGENT_WORKTREE_DIR || envValues.NOTION_AGENT_WORKTREE_DIR || DEFAULT_WORKTREE_DIR,
+      'worktree-dir-by-ide',
+      process.env.NOTION_AGENT_WORKTREE_DIR_BY_IDE || envValues.NOTION_AGENT_WORKTREE_DIR_BY_IDE || '',
     ),
     worktreeMapFile: getOptionalArg(
       args,
@@ -2403,7 +2426,9 @@ function printUsage() {
   print(`  --download-attachments true|false (default ${String(DEFAULT_DOWNLOAD_ATTACHMENTS)})`);
   print(`  --attachments-max <n> (default ${String(DEFAULT_ATTACHMENTS_MAX)})`);
   print(`  --worktree-mode true|false (default ${String(DEFAULT_WORKTREE_MODE)})`);
-  print(`  --worktree-dir <dir> (default ${DEFAULT_WORKTREE_DIR})`);
+  print('  --ide cursor|webstorm|jetbrains (select IDE-specific worktree dir defaults)');
+  print(`  --worktree-dir <dir> (explicit override; default ${DEFAULT_WORKTREE_DIR} for cursor/unset)`);
+  print('  --worktree-dir-by-ide "cursor=.notion/worktrees,webstorm=../{repo}-worktrees"');
   print(`  --worktree-map-file <path> (default ${DEFAULT_WORKTREE_MAP_FILE})`);
   print(`  --active-tickets-file <path> (default ${DEFAULT_ACTIVE_TICKETS_FILE})`);
   print(`  --worktree-shortcuts-dir <path> (default ${DEFAULT_WORKTREE_SHORTCUTS_DIR})`);
@@ -2472,6 +2497,11 @@ async function main(argv = process.argv) {
   let gitPreparation = null;
 
   if (config.worktreeMode && !config.worktreeResolved) {
+    const ideHint = config.ide ? `ide=${config.ide}, ` : '';
+    print(
+      `Worktree root (${ideHint}source=${config.worktreeDirSource}): ${config.worktreeDir}`,
+      colors.dim,
+    );
     const worktree = await ensureTicketWorktree(config, page, branchCandidate);
     await writeActiveTicketsIndex(config);
     print(

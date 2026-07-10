@@ -64,6 +64,7 @@ const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_GIT_REQUIRE_CLEAN_WORKTREE = true;
 const DEFAULT_AGENT_CREATE_CHAT = false;
 const DEFAULT_AGENT_CREATE_CHAT_COMMAND = '$HOME/.local/bin/cursor-agent create-chat';
+const DEFAULT_AGENT_MODEL = 'composer-2.5';
 const DEFAULT_AGENT_CREATE_CHAT_TIMEOUT_MS = 15000;
 const DEFAULT_AGENT_UNSET_CURSOR_API_KEY = true;
 const DEFAULT_AGENT_HEADLESS_PRINT = true;
@@ -105,6 +106,14 @@ const DEFAULT_RULES = [
   '- Write a meaningful commit message: fix|feat|chore subject + user-visible outcome + why (avoid vague messages).',
   '- When user says task is done: commit changes with a meaningful message, then run `notion-auto done` to push, create MR, and enable auto-merge.',
   '- Do NOT post comments to Notion or update ticket status unless the user explicitly asks.',
+  '',
+  'Model usage (token cost control):',
+  '- Use your selected premium model ONLY for ticket understanding, solution design, code edits, and debugging.',
+  '- For auxiliary work, delegate to a fast/cheap subagent (model: composer-2.5 or auto):',
+  '  - Notion MCP reads, comment lookups, and status/property updates',
+  '  - Running `notion-auto reply-latest`, `notion-auto done`, or other toolkit CLI without code changes',
+  '  - GitLab MR/pipeline status checks (not merge-conflict resolution)',
+  '- Do NOT use premium thinking models for repetitive Notion/GitLab fetches.',
   '',
   'Branching and merge conflict rules (CRITICAL):',
   '- NEVER push directly to `dev`, `acceptance`, or `main`. These are protected branches. All changes go through MRs only.',
@@ -365,6 +374,7 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_GIT_REQUIRE_CLEAN_WORKTREE',
     'NOTION_AGENT_CREATE_CHAT',
     'NOTION_AGENT_CREATE_CHAT_COMMAND',
+    'NOTION_AGENT_MODEL',
     'NOTION_AGENT_UNSET_CURSOR_API_KEY',
     'NOTION_AGENT_HEADLESS_PRINT',
     'NOTION_AGENT_IDE_HANDOFF',
@@ -499,6 +509,15 @@ function buildRuntimeConfig(args, envValues) {
       args,
       'agent-command',
       process.env.NOTION_AGENT_COMMAND || envValues.NOTION_AGENT_COMMAND || '',
+    ),
+    agentModel: resolveAgentModel(
+      getOptionalArg(
+        args,
+        'agent-model',
+        process.env.NOTION_AGENT_MODEL ||
+          envValues.NOTION_AGENT_MODEL ||
+          DEFAULT_AGENT_MODEL,
+      ),
     ),
     rulesFile: getOptionalArg(
       args,
@@ -718,6 +737,13 @@ function buildRuntimeConfig(args, envValues) {
         getOptionalArg(args, 'section-property', DEFAULT_SECTION_PROPERTY),
     ).trim(),
   };
+}
+
+function resolveAgentModel(raw) {
+  const trimmed = String(raw ?? DEFAULT_AGENT_MODEL).trim();
+  if (!trimmed) return '';
+  if (/^(false|off|none|inherit|default|skip)$/i.test(trimmed)) return '';
+  return trimmed;
 }
 
 function adaptCursorAgentCommandForHeadless(command, headless) {
@@ -2029,24 +2055,37 @@ function commandStartsWithCursorAgent(raw) {
   return Boolean(firstToken && /cursor-agent$/i.test(firstToken[0]));
 }
 
-function injectResumeFlagIfNeeded(command, chatId) {
+function injectCursorAgentFlagIfNeeded(command, flagName, flagValue) {
   const raw = String(command || '').trim();
-  if (!raw || !chatId) return raw;
-
+  const value = String(flagValue || '').trim();
+  if (!raw || !value) return raw;
   if (!commandStartsWithCursorAgent(raw)) return raw;
 
-  if (/(^|\s)--resume(\s|=)/.test(raw) || /(^|\s)--continue(\s|$)/.test(raw)) {
-    return raw;
-  }
+  const flagPattern = new RegExp(`(^|\\s)--${flagName}(\\s|=)`);
+  if (flagPattern.test(raw)) return raw;
 
-  const safeId = String(chatId).replace(/"/g, '\\"');
+  const safeValue = value.replace(/"/g, '\\"');
   const firstSpace = raw.search(/\s/);
   if (firstSpace === -1) {
-    return `${raw} --resume "${safeId}"`;
+    return `${raw} --${flagName} "${safeValue}"`;
   }
   const bin = raw.slice(0, firstSpace);
   const rest = raw.slice(firstSpace + 1).trimStart();
-  return `${bin} --resume "${safeId}" ${rest}`;
+  return `${bin} --${flagName} "${safeValue}" ${rest}`;
+}
+
+function injectResumeFlagIfNeeded(command, chatId) {
+  const raw = String(command || '').trim();
+  if (!raw || !chatId) return raw;
+  if (!commandStartsWithCursorAgent(raw)) return raw;
+  if (/(^|\s)--resume(\s|=)/.test(raw) || /(^|\s)--continue(\s|$)/.test(raw)) {
+    return raw;
+  }
+  return injectCursorAgentFlagIfNeeded(raw, 'resume', chatId);
+}
+
+function injectModelFlagIfNeeded(command, model) {
+  return injectCursorAgentFlagIfNeeded(command, 'model', model);
 }
 
 async function readRulesText(rulesFile) {
@@ -2335,6 +2374,7 @@ async function dispatchAgent(config, files, context, gitPreparation) {
   }
 
   let command = injectResumeFlagIfNeeded(configuredCommand, chatId);
+  command = injectModelFlagIfNeeded(command, config.agentModel);
   command = adaptCursorAgentCommandForHeadless(command, config.agentHeadlessPrint);
 
   const env = buildCursorAgentChildEnv(config, {
@@ -2363,6 +2403,9 @@ async function dispatchAgent(config, files, context, gitPreparation) {
     );
   }
 
+  if (config.agentModel) {
+    print(`Agent model: ${config.agentModel}`, colors.dim);
+  }
   print(`Dispatching agent command: ${command}`, colors.cyan);
   if (config.agentHeadlessPrint && /\s--print\b/.test(command)) {
     print(
@@ -2420,6 +2463,7 @@ function printUsage() {
   print('  --git-require-clean-worktree true|false');
   print('  --agent-create-chat true|false');
   print('  --agent-create-chat-command "<shell command>"');
+  print(`  --agent-model <id> (default ${DEFAULT_AGENT_MODEL}; use inherit to skip injection)`);
   print('  --unset-cursor-api-key true|false');
   print('  --agent-headless-print true|false');
   print('  --ide-handoff true|false');

@@ -8,6 +8,14 @@ Ticket intake rules:
 - After reading the handoff `.md` and confirming the prepared branch, rename the current chat to match the branch name without the configured prefix (example: `dev/notion/fix-login-timeout` -> `fix-login-timeout`).
 - If ticket data is insufficient, list exact missing inputs needed to proceed.
 
+Model usage (token cost control):
+- Use your selected premium model ONLY for ticket understanding, solution design, code edits, and debugging.
+- For auxiliary work, delegate to a fast/cheap subagent (model: composer-2.5 or auto):
+  - Notion MCP reads, comment lookups, and status/property updates
+  - Running `notion-auto reply-latest`, `notion-auto done`, or other toolkit CLI without code changes
+  - GitLab MR/pipeline status checks (not merge-conflict resolution)
+- Do NOT use premium thinking models for repetitive Notion/GitLab fetches.
+
 Completion and handoff rules (mandatory when user asks to commit):
 - Do not hardcode personal names/emails in shared rules or ticket comments.
 - Use custom signing/author commit command only when user explicitly asks for it.

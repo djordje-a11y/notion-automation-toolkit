@@ -1,33 +1,57 @@
-# Copy to target workspace as .notion.local and update values.
+# Workspace config for Notion automation.
+# Copy to your TARGET REPO root (not the toolkit repo):
+#   cp /path/to/notion-automation-toolkit/.notion.local.example /path/to/repo/.notion.local
+#
+# Setup guide: SETUP_GUIDE.md
+# AI agent runbook: AGENTS.md
+# Never commit this file — it contains secrets.
 
+# --- Required: Notion API ---
+
+# Integration token from Notion Settings → Connections → your integration.
+# Format: ntn_... (current) or secret_... (legacy).
 NOTION_API_TOKEN="secret_replace_me"
+
+# Ticket database UUID — see SETUP_GUIDE.md "Finding Notion IDs".
 NOTION_DATABASE_ID="replace-with-database-id"
-# Optional but required for Notion databases with multiple data sources.
-# Example: collection://e519... -> use only the id part (e519...)
+
+# Only for databases with multiple data sources (bridge will hint if needed):
 # NOTION_DATA_SOURCE_ID="replace-with-data-source-id"
-# Required when using NOTION_DATA_SOURCE_ID.
 # NOTION_API_VERSION="2025-09-03"
 
-# Polling bridge trigger
+# --- Required: trigger filters ---
+
+# Exact status option text from your Notion database (case-sensitive).
+# Examples: "In progress", "In Progress", "AI work in progress"
 NOTION_TRIGGER_STATUS="In Progress"
+
+# Property names must match your database columns exactly.
 NOTION_STATUS_PROPERTY="Status"
+NOTION_ASSIGNEE_PROPERTY="Assignee"
+
+# Comma-separated Notion user UUIDs allowed to trigger automation.
+# Find via Notion MCP notion-get-users or SETUP_GUIDE.md § 3.4.
+NOTION_ASSIGNEE_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# --- Polling bridge ---
+
 NOTION_POLL_INTERVAL_SECONDS="15"
 NOTION_DEDUPE_SECONDS="120"
 NOTION_SINGLE_TICKET_MODE="true"
 NOTION_CLEANUP_ON_STATUS="true"
 NOTION_CLEANUP_STATUS="Fix Deployed Dev"
 
-# Optional user scoping
-NOTION_ASSIGNEE_PROPERTY="Assignee"
-NOTION_ASSIGNEE_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-
-# Optional routing key scoping
+# Optional routing key scoping (uncomment if used):
 # NOTION_ROUTING_KEY_PROPERTY="Cursor Owner"
 # NOTION_ROUTING_KEY="your-routing-key"
+
+# --- Runtime paths (defaults are fine for most setups) ---
 
 NOTION_AUTOMATION_RUNTIME_FILE=".notion/runtime.json"
 NOTION_BRIDGE_STATE_FILE=".notion/bridge-state.json"
 NOTION_REQUIRE_LOCAL_IGNORES="true"
+
+# --- Git / branch strategy ---
 
 NOTION_AGENT_BRANCH_PREFIX="fix"
 NOTION_AGENT_BRANCH_PREFIX_RULES="bugs=fix,epics backlog=feat"
@@ -37,6 +61,8 @@ NOTION_AGENT_GIT_BASE_BRANCH="dev"
 NOTION_AGENT_GIT_REMOTE="origin"
 NOTION_AGENT_GIT_REQUIRE_CLEAN_WORKTREE="true"
 
+# --- Handoff / intake ---
+
 NOTION_AGENT_IDE_HANDOFF="true"
 NOTION_AGENT_OUTPUT_DIR=".notion/intake"
 NOTION_AGENT_HANDOFF_DIR=".notion/handoffs"
@@ -45,32 +71,41 @@ NOTION_AGENT_HANDOFF_RETRIGGER_LATEST_ONLY="true"
 NOTION_AGENT_SECTION_PROPERTY="Type"
 NOTION_AGENT_DOWNLOAD_ATTACHMENTS="true"
 NOTION_AGENT_ATTACHMENTS_MAX="20"
+
+# --- Multi-ticket worktree mode (optional) ---
+
 NOTION_AGENT_WORKTREE_MODE="false"
-# IDE-specific worktree layout (Cursor keeps nested worktrees; JetBrains IDEs use external dirs).
 # NOTION_AGENT_IDE="cursor"
 # NOTION_AGENT_IDE="webstorm"
-# Per-IDE overrides (optional; {repo} expands to the workspace folder name):
 # NOTION_AGENT_WORKTREE_DIR_BY_IDE="cursor=.notion/worktrees,webstorm=../{repo}-worktrees"
-# Explicit override (wins over IDE defaults):
 # NOTION_AGENT_WORKTREE_DIR=".notion/worktrees"
 # NOTION_AGENT_WORKTREE_MAP_FILE=".notion/worktree-map.json"
 # NOTION_AGENT_ACTIVE_TICKETS_FILE=".notion/active-tickets.md"
 # NOTION_AGENT_WORKTREE_SHORTCUTS_DIR=".notion/w"
-# Publish named handoff aliases in root workspace: notion-handoff-<first-2-3-branch-words>.md
 # NOTION_AGENT_PUBLISH_ROOT_HANDOFF_ALIAS="true"
 # NOTION_AGENT_HANDOFF_ALIAS_WORDS="3"
 # NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE=".notion/handoff-alias-map.json"
 # NOTION_AGENT_ACTIVE_HANDOFFS_FILE=".notion/active-handoffs.md"
 # NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP="true"
 
+# --- Commands (defaults work for most Cursor setups) ---
+
 NOTION_ON_MATCH_COMMAND='notion-auto intake --workspace "$PWD" --page-id "$NOTION_TRIGGER_PAGE_ID" --dispatch'
-# Cursor does not reliably support auto chat creation via CLI; keep this disabled.
 NOTION_AGENT_CREATE_CHAT="false"
+# Cheap model for script-driven cursor-agent (intake dispatch). IDE chat uses your chosen model.
+# Use inherit to skip --model injection. Optional override for notion-mcp-handoff.sh: NOTION_MCP_HANDOFF_MODEL
+NOTION_AGENT_MODEL="composer-2.5"
 NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PWD" "Read $NOTION_AGENT_IDE_HANDOFF_FILE and return required sections."'
 
-# Optional GitLab done-flow defaults (used by `notion-auto done`):
+# --- Agent rules (copy once during setup) ---
+#   mkdir -p .notion
+#   cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md .notion/agent-rules.md
+NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
+
+# --- Optional: GitLab done-flow (notion-auto done) ---
+
 # GITLAB_TOKEN="glpat-..."
-# GITLAB_PROJECT_ID="group%2Fproject" # or numeric project ID
+# GITLAB_PROJECT_ID="group%2Fproject"
 # GITLAB_TARGET_BRANCH="dev"
 # GITLAB_REMOTE="origin"
 # GITLAB_AUTO_MERGE="true"
@@ -79,11 +114,7 @@ NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PW
 # GITLAB_MERGED_NOTION_STATUS="Fix Deployed Dev"
 # GITLAB_SYNC_INTERVAL_SECONDS="30"
 
-# Keep rules in a workspace-local, ignored path under .notion/.
-# Copy toolkit rules once:
-#   cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md .notion/agent-rules.md
-NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
+# --- Optional: agent runtime ---
 
-# Optional:
 # NOTION_AGENT_UNSET_CURSOR_API_KEY="true"
 # NOTION_AGENT_HEADLESS_PRINT="false"

@@ -13,6 +13,8 @@ Options:
   --workspace <path>    Target workspace (default: current directory)
   --output <path>       Handoff output file path (default: notion-handoff.md in workspace)
   --agent-bin <path>    Path to cursor-agent binary (default: auto-detect)
+  --model <id>          Model for cursor-agent (default: NOTION_MCP_HANDOFF_MODEL or NOTION_AGENT_MODEL or composer-2.5)
+  --model inherit       Skip --model injection (use cursor-agent session default)
   -h, --help            Show this help
 EOF
 }
@@ -21,6 +23,7 @@ ticket=""
 workspace="${PWD}"
 output_rel="notion-handoff.md"
 agent_bin="${CURSOR_AGENT_BIN:-}"
+agent_model="${NOTION_MCP_HANDOFF_MODEL:-${NOTION_AGENT_MODEL:-composer-2.5}}"
 
 while (($#)); do
   case "$1" in
@@ -39,6 +42,10 @@ while (($#)); do
     --agent-bin)
       shift
       agent_bin="${1:-}"
+      ;;
+    --model)
+      shift
+      agent_model="${1:-}"
       ;;
     -h|--help)
       print_usage
@@ -114,7 +121,14 @@ echo "Generating handoff from ticket: ${ticket}"
 echo "Workspace: ${workspace_abs}"
 echo "Output: ${output_file}"
 
-"${agent_bin}" --mode agent --workspace "${workspace_abs}" "${prompt}"
+agent_args=(--workspace "${workspace_abs}")
+if [[ -n "${agent_model}" && ! "${agent_model}" =~ ^(false|off|none|inherit|default|skip)$ ]]; then
+  agent_args+=(--model "${agent_model}")
+  echo "Model: ${agent_model}"
+fi
+agent_args+=("${prompt}")
+
+"${agent_bin}" "${agent_args[@]}"
 
 echo "Handoff generation request completed."
 echo "Attach in chat with: @${output_rel}"

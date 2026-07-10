@@ -6,7 +6,17 @@ This toolkit is intentionally **outside product repos** and writes local runtime
 
 For full first-time setup, see `SETUP_GUIDE.md`.
 
+For AI agent setup (user fills `.notion.local`, agent runs the rest), see `AGENTS.md`.
+
 Planned next-step automation ideas are tracked in `TODO.md`.
+
+## Setup in brief
+
+1. User (or admin) provides Notion integration token, database ID, and property names → written to **`.notion.local`** in the target repo.
+2. Agent or developer runs `notion-auto init`, copies agent rules, `notion-auto check`, `notion-auto start`.
+3. User changes a ticket status to the trigger value → `@notion-handoff.md` is ready in Cursor.
+
+There is no separate `.env` file. All workspace config lives in `.notion.local` (git-ignored).
 
 ## What You Get
 
@@ -47,17 +57,20 @@ notion-auto init --workspace /path/to/repo
 
 This ensures local ignore entries for `.notion/`, `.notion.local`, and `notion-handoff.md`.
 
-3. Create workspace config:
+3. Create workspace config (`.notion.local` — not `.env`):
 
 ```bash
 cp /path/to/notion-automation-toolkit/.notion.local.example /path/to/repo/.notion.local
 ```
+
+Fill required values — see `SETUP_GUIDE.md` (Finding Notion IDs + §4 Required keys). Minimum: `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_TRIGGER_STATUS`, `NOTION_ASSIGNEE_PROPERTY`, `NOTION_ASSIGNEE_IDS`.
 
 Keep auto chat creation disabled (recommended default):
 
 ```bash
 # in /path/to/repo/.notion.local
 NOTION_AGENT_CREATE_CHAT="false"
+NOTION_AGENT_MODEL="composer-2.5"   # script-driven agent only; IDE chat keeps your chosen model
 ```
 
 4. Seed workspace-local agent rules (ignored from git):
@@ -67,11 +80,13 @@ mkdir -p /path/to/repo/.notion
 cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md /path/to/repo/.notion/agent-rules.md
 ```
 
-5. Validate config:
+5. Validate config (local + live Notion API when online):
 
 ```bash
 notion-auto check --workspace /path/to/repo
 ```
+
+`check` verifies config, authenticates the Notion token, confirms database access, and validates status/assignee property names. Use `--skip-live-check` to validate config files only.
 
 6. Start automation:
 
@@ -278,6 +293,7 @@ Optional flags:
 ```bash
 scripts/notion-mcp-handoff.sh --ticket "<url-or-id>" --output ".notion/handoffs/notion-handoff.md"
 scripts/notion-mcp-handoff.sh --ticket "<url-or-id>" --agent-bin "$HOME/.local/bin/cursor-agent"
+scripts/notion-mcp-handoff.sh --ticket "<url-or-id>" --model composer-2.5
 ```
 
 Minimum requirements for this mode:
@@ -286,6 +302,25 @@ Minimum requirements for this mode:
 - Notion MCP server installed in Cursor and authenticated.
 - A Notion page URL or page ID.
 - Write access to the target workspace for `notion-handoff.md`.
+
+## Model selection (token cost)
+
+Most toolkit commands talk directly to Notion or GitLab APIs and do **not** use LLM tokens (`notion-auto done`, `reply-latest`, polling bridge, intake fetch).
+
+LLM tokens are spent when **cursor-agent** runs (intake dispatch, MCP handoff) and in your **IDE Agent chat** while working the ticket.
+
+Configure a cheap model for script-driven agent calls in `.notion.local`:
+
+```bash
+# Default for intake dispatch (--model injected into NOTION_AGENT_COMMAND)
+NOTION_AGENT_MODEL="composer-2.5"
+# Optional override for notion-mcp-handoff.sh only
+# NOTION_MCP_HANDOFF_MODEL="auto"
+```
+
+Set `NOTION_AGENT_MODEL=inherit` to skip injection and use the cursor-agent session default.
+
+For in-chat work, keep your premium model for implementation. Copy `scripts/notion-ticket-agent-rules.md` to `.notion/agent-rules.md` — it instructs the agent to delegate Notion MCP and GitLab status checks to a cheap subagent (`composer-2.5` or `auto`).
 
 ## Notes About Notion Triggering
 
@@ -296,3 +331,7 @@ Minimum requirements for this mode:
 - No Notion-side webhook is required for the default flow.
 - Optional multi-ticket mode via git worktrees: set `NOTION_AGENT_WORKTREE_MODE=true`.
 - In worktree mode, cleanup on `NOTION_CLEANUP_STATUS` also updates `.notion/worktree-map.json` and `.notion/active-tickets.md`, and can auto-remove worktrees (`NOTION_AGENT_WORKTREE_AUTO_REMOVE_ON_CLEANUP=true`).
+
+## Troubleshooting
+
+See `SETUP_GUIDE.md` § Troubleshooting for common setup and runtime issues (status text mismatch, assignee filter, multi-data-source databases, GitLab token, etc.).

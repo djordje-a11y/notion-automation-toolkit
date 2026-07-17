@@ -44,6 +44,10 @@ const SCRIPT_MAP = {
     script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-done.js'),
     prependArgs: [],
   },
+  push: {
+    script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-push.js'),
+    prependArgs: [],
+  },
 };
 
 function printUsage() {
@@ -66,7 +70,8 @@ function printUsage() {
       '  intake  Run intake directly',
       '  reply-latest  Add comment to the latest discussion (fallback: page comment)',
       '  tickets  List active tracked ticket worktrees',
-      '  done   Push current branch and open GitLab MR to target branch',
+      '  done    Push current branch and open GitLab MR to target branch',
+      '  push    Commit changes, push, open MR to dev, and assign reviewers',
       '',
       'Examples:',
       '  notion-auto init --workspace /path/to/repo',
@@ -76,6 +81,7 @@ function printUsage() {
       '  notion-auto intake --workspace /path/to/repo --page-id <notion-page-id> --dispatch',
       '  notion-auto tickets --checkout',
       '  notion-auto done --target-branch dev',
+      '  notion-auto push --message "Fix ticket behavior"',
       '',
     ].join('\n'),
   );

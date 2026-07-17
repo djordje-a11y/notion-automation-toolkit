@@ -102,12 +102,17 @@ NOTION_AGENT_COMMAND='$HOME/.local/bin/cursor-agent --mode plan --workspace "$PW
 #   cp /path/to/notion-automation-toolkit/scripts/notion-ticket-agent-rules.md .notion/agent-rules.md
 NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
 
-# --- Optional: GitLab done-flow (notion-auto done) ---
+# --- Optional: GitLab flows (notion-auto done / notion-auto push) ---
 
 # GITLAB_TOKEN="glpat-..."
 # GITLAB_PROJECT_ID="group%2Fproject"
 # GITLAB_TARGET_BRANCH="dev"
 # GITLAB_REMOTE="origin"
+# Required by notion-auto push: comma-separated numeric GitLab user IDs.
+# GITLAB_REVIEWER_IDS="12345,67890"
+# Optional default commit message; --message overrides it.
+# NOTION_PUSH_COMMIT_MESSAGE="Implement ticket changes"
+# Used by notion-auto done only:
 # GITLAB_AUTO_MERGE="true"
 # GITLAB_API_URL="https://gitlab.com/api/v4"
 # GITLAB_STATUS_SYNC_ON_MERGE="true"

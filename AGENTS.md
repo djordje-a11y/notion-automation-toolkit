@@ -23,12 +23,13 @@ These values cannot be inferred reliably. Ask the user (or read from an existing
 | `NOTION_ASSIGNEE_IDS` | Notion user UUID(s) allowed to trigger automation |
 | `NOTION_AGENT_GIT_BASE_BRANCH` | Their repo's base branch (`dev`, `acceptance`, etc.) |
 
-Optional (only if using done-flow):
+Optional (only if using GitLab done/push flows):
 
 | Value | Why |
 |-------|-----|
 | `GITLAB_TOKEN` | GitLab PAT or OAuth token for MR creation |
 | `GITLAB_TARGET_BRANCH` | MR target branch (default `dev`) |
+| `GITLAB_REVIEWER_IDS` | Required by `notion-auto push` to assign MR reviewers |
 
 Notion-side actions the user (or admin) must confirm:
 
@@ -199,6 +200,14 @@ GITLAB_TARGET_BRANCH="dev"
 ```
 
 Then after implementation: `notion-auto done` from the ticket worktree.
+
+If another developer must review and merge, also configure:
+
+```bash
+GITLAB_REVIEWER_IDS="12345,67890"
+```
+
+Then use `notion-auto push --message "Implement ticket changes"` instead. It commits all current changes, pushes, creates or reuses the MR, and assigns the reviewers without enabling auto-merge.
 
 ---
 

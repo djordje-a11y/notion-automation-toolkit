@@ -17,6 +17,7 @@
     "notion:reply-latest": "node ./bin/notion-auto.js reply-latest",
     "notion:tickets": "node ./bin/notion-auto.js tickets",
     "notion:done": "node ./bin/notion-auto.js done",
+    "notion:push": "node ./bin/notion-auto.js push",
     "notion:mcp-handoff": "bash ./scripts/notion-mcp-handoff.sh"
   }
 }

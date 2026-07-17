@@ -115,6 +115,7 @@ notion-auto tickets      --workspace /path/to/repo
 notion-auto tickets      --checkout
 notion-auto tickets      --paths true
 notion-auto done
+notion-auto push         --message "Implement ticket changes"
 ```
 
 Always run/start/stop via `notion-auto` when validating toolkit behavior.
@@ -236,6 +237,36 @@ Token notes:
 
 - PAT tokens (`glpat-...`) do not expire frequently; create at [gitlab.com/-/user_settings/personal_access_tokens](https://gitlab.com/-/user_settings/personal_access_tokens) with `api` scope.
 - OAuth2 tokens (from `glab auth login`) expire periodically; re-run `glab auth login` and copy the new token from `~/.config/glab-cli/config.yml` when expired.
+
+## Reviewer Push Flow
+
+Use `notion-auto push` when your GitLab process requires another developer to review and merge:
+
+```bash
+notion-auto push --message "Implement ticket changes"
+```
+
+This command:
+
+1. stages all tracked and untracked changes with `git add -A`
+2. commits them (skips the commit if the worktree is already clean)
+3. pushes the current branch
+4. creates or reuses an MR targeting `dev`
+5. assigns the configured reviewers
+
+Configure the target repo's `.notion.local`:
+
+```bash
+GITLAB_TOKEN="glpat-..."
+GITLAB_TARGET_BRANCH="dev"
+GITLAB_REVIEWER_IDS="12345,67890"
+# Optional fallback when --message is omitted:
+# NOTION_PUSH_COMMIT_MESSAGE="Implement ticket changes"
+```
+
+Reviewer IDs are numeric GitLab user IDs. Find your ID under GitLab **Preferences → Account**, or obtain project member IDs through GitLab's project members page/API.
+
+If `--message` and `NOTION_PUSH_COMMIT_MESSAGE` are both omitted, the command derives a message from the current branch name. Use `--dry-run true` to preview without committing, pushing, or creating the MR.
 
 ## Merge To Notion Status Sync
 

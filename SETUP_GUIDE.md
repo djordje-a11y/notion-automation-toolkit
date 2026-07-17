@@ -229,14 +229,15 @@ Edit `/path/to/your/repo/.notion.local`.
 | `NOTION_DATA_SOURCE_ID` | Data source UUID |
 | `NOTION_API_VERSION` | `"2025-09-03"` |
 
-### Optional GitLab done-flow keys
+### Optional GitLab flow keys
 
 | Key | Description |
 |-----|-------------|
 | `GITLAB_TOKEN` | PAT (`glpat-...`) or OAuth token from `glab auth login` |
 | `GITLAB_TARGET_BRANCH` | MR target (default `dev`) |
+| `GITLAB_REVIEWER_IDS` | Reviewer IDs required by `notion-auto push` |
 | `GITLAB_PROJECT_ID` | Auto-inferred from git remote if omitted |
-| `GITLAB_AUTO_MERGE` | Default `true` |
+| `GITLAB_AUTO_MERGE` | `notion-auto done` default: `true` |
 
 See `.notion.local.example` for all options with inline comments.
 
@@ -375,6 +376,20 @@ From inside the ticket branch/worktree. This:
 4. Enables auto-merge (default)
 
 Requires `GITLAB_TOKEN` in `.notion.local`. See `README.md` § Task Done Flow for token setup.
+
+For reviewer-controlled merging, use the separate push flow:
+
+```bash
+notion-auto push --message "Implement ticket changes"
+```
+
+It commits all current changes, pushes the branch, creates or reuses an MR to `dev`, and assigns reviewers. Configure:
+
+```bash
+GITLAB_REVIEWER_IDS="12345,67890"
+# Optional fallback when --message is omitted:
+# NOTION_PUSH_COMMIT_MESSAGE="Implement ticket changes"
+```
 
 If status property is not `Status`:
 

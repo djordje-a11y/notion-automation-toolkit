@@ -5,7 +5,8 @@
   "description": "Standalone notion automation toolkit for local Cursor workflows.",
   "type": "module",
   "bin": {
-    "notion-auto": "./bin/notion-auto.js"
+    "notion-auto": "./bin/notion-auto.js",
+    "na": "./bin/notion-auto.js"
   },
   "scripts": {
     "notion:auto": "node ./bin/notion-auto.js",

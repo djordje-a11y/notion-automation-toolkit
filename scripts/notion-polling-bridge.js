@@ -948,6 +948,17 @@ async function queryDatabaseSince(config, cursorIso) {
   return pages;
 }
 
+function buildTicketStatusSnapshot(pages, statusPropertyName) {
+  const ticketStatuses = {};
+  for (const page of pages) {
+    const pageId = String(page?.id || '').trim();
+    const statusText = resolveStatusText(page, statusPropertyName);
+    if (!pageId || !statusText) continue;
+    ticketStatuses[pageId] = statusText;
+  }
+  return ticketStatuses;
+}
+
 function buildDedupeKey(pageId, editedAt, statusText) {
   return [String(pageId || ''), String(editedAt || ''), String(statusText || '')].join('|');
 }
@@ -1576,10 +1587,12 @@ function printUsage() {
 }
 
 async function runPollingLoop(config) {
-  const state = await readJsonFileSafe(config.stateFile, {});
+  const baselinePages = await queryDatabaseSince(config, '');
+  const ticketStatuses = buildTicketStatusSnapshot(baselinePages, config.statusPropertyName);
+  const startedAt = new Date().toISOString();
   let cursorIso = new Date().toISOString();
   await writeStateFile(config.stateFile, {
-    startedAt: new Date().toISOString(),
+    startedAt,
     pid: process.pid,
     cursor: cursorIso,
     lastPollAt: null,
@@ -1588,7 +1601,12 @@ async function runPollingLoop(config) {
     databaseId: config.databaseId,
     dataSourceId: config.dataSourceId || null,
     triggerStatus: config.triggerStatus,
+    ticketStatuses,
   });
+  print(
+    `Status baseline captured for ${Object.keys(ticketStatuses).length} ticket(s); only future transitions into '${config.triggerStatus}' will dispatch.`,
+    colors.dim,
+  );
   print(`Polling cursor set to now: ${cursorIso}`, colors.dim);
 
   while (!stopping) {
@@ -1609,6 +1627,13 @@ async function runPollingLoop(config) {
         if (isIsoAfter(editedAt, nextCursorIso)) nextCursorIso = editedAt;
         const statusText = resolveStatusText(page, config.statusPropertyName);
         const pageTitle = resolvePageTitle(page);
+        const hadPreviousStatus = Object.prototype.hasOwnProperty.call(ticketStatuses, pageId);
+        const previousStatus = hadPreviousStatus ? String(ticketStatuses[pageId] || '').trim() : '';
+        const enteredTriggerStatus =
+          hadPreviousStatus &&
+          normalize(previousStatus) !== normalize(config.triggerStatus) &&
+          normalize(statusText) === normalize(config.triggerStatus);
+        if (pageId && statusText) ticketStatuses[pageId] = statusText;
 
         if (config.cleanupOnStatus && config.cleanupStatus) {
           const isCleanupStatus = normalize(statusText) === normalize(config.cleanupStatus);
@@ -1675,6 +1700,17 @@ async function runPollingLoop(config) {
         }
         const matchedStatusText = String(filterResult.metadata?.status || statusText).trim();
         const matchedPageTitle = String(filterResult.metadata?.title || pageTitle || pageId).trim();
+        if (!enteredTriggerStatus) {
+          ignoredCount += 1;
+          const transitionReason = hadPreviousStatus
+            ? `status remained '${statusText}' (previously '${previousStatus}')`
+            : 'no previous status baseline exists';
+          print(
+            `Ignored page ${pageId} (${matchedPageTitle}): ${transitionReason}; no trigger-status transition detected.`,
+            colors.dim,
+          );
+          continue;
+        }
         const dedupeKey = buildDedupeKey(pageId, editedAt, statusText);
         if (shouldSkipAsDuplicate(dedupeKey, config.dedupeWindowMs)) {
           ignoredCount += 1;
@@ -1708,7 +1744,7 @@ async function runPollingLoop(config) {
 
       cursorIso = nextCursorIso;
       await writeStateFile(config.stateFile, {
-        startedAt: String(state?.startedAt || new Date().toISOString()),
+        startedAt,
         pid: process.pid,
         cursor: cursorIso,
         lastPollAt: pollStartedAt,
@@ -1717,6 +1753,7 @@ async function runPollingLoop(config) {
         databaseId: config.databaseId,
         dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
+        ticketStatuses,
         stats: {
           polledCount,
           matchedCount,
@@ -1749,7 +1786,7 @@ async function runPollingLoop(config) {
         print('Hint: NOTION_DATA_SOURCE_ID requires NOTION_API_VERSION="2025-09-03".', colors.yellow);
       }
       await writeStateFile(config.stateFile, {
-        startedAt: String(state?.startedAt || new Date().toISOString()),
+        startedAt,
         pid: process.pid,
         cursor: cursorIso,
         lastPollAt: pollStartedAt,
@@ -1758,6 +1795,7 @@ async function runPollingLoop(config) {
         databaseId: config.databaseId,
         dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
+        ticketStatuses,
       });
     }
 
@@ -1766,7 +1804,7 @@ async function runPollingLoop(config) {
   }
 
   await writeStateFile(config.stateFile, {
-    startedAt: String(state?.startedAt || new Date().toISOString()),
+    startedAt,
     pid: process.pid,
     cursor: cursorIso,
     lastPollAt: new Date().toISOString(),
@@ -1775,6 +1813,7 @@ async function runPollingLoop(config) {
     databaseId: config.databaseId,
     dataSourceId: config.dataSourceId || null,
     triggerStatus: config.triggerStatus,
+    ticketStatuses,
   });
 }
 

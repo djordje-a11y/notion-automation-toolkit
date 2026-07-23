@@ -295,6 +295,8 @@ Per workspace, the toolkit writes:
 - `.notion/bridge-state.json`
 - `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)
 
+When the polling bridge starts, it records the current status of every ticket in `.notion/bridge-state.json`. Intake runs only when a later poll observes a ticket move from another status into `NOTION_TRIGGER_STATUS`. Editing an already-triggered ticket, changing its assignee, or changing an unrelated property does not create another handoff or worktree.
+
 When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Fix Deployed Dev`).
 
 In Cursor Agent chat, attach the stable alias:

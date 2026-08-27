@@ -31,6 +31,13 @@ Optional (only if using GitLab done/push flows):
 | `GITLAB_TARGET_BRANCH` | MR target branch (default `dev`) |
 | `GITLAB_REVIEWER_IDS` | Required by `notion-auto push` to assign MR reviewers |
 
+Optional sprint/backlog hygiene (enabled by default on intake):
+
+| Value | Why |
+|-------|-----|
+| `NOTION_CURRENT_SPRINT` | Override when auto ISO-week detect picks the wrong Sprint option |
+| `NOTION_SPRINT_ASSIGN_ON_INTAKE` | Set `false` to disable assign + Sub-item cascade |
+
 Notion-side actions the user (or admin) must confirm:
 
 1. Internal integration exists and token is copied.
@@ -172,9 +179,10 @@ notion-auto start --workspace /path/to/target-repo
 
 Ask user to:
 
-1. Open a ticket assigned to them in the configured database.
-2. Change status to `NOTION_TRIGGER_STATUS` (exact text).
-3. Wait ~15 seconds (default poll interval).
+1. Wait until the launcher prints `Automation is ready` (large ticket databases can take a minute to snapshot).
+2. Open a ticket assigned to them in the configured database.
+3. Change status to `NOTION_TRIGGER_STATUS` (exact text).
+4. Wait ~15 seconds (default poll interval).
 
 Success criteria:
 
@@ -199,7 +207,7 @@ GITLAB_TOKEN="glpat-..."
 GITLAB_TARGET_BRANCH="dev"
 ```
 
-Then after implementation: `notion-auto done` from the ticket worktree.
+Then after implementation: `notion-auto done` from the ticket worktree. The MR description is filled from the Notion ticket (problem/feature), commit messages (how it is solved), and the ticket URL.
 
 If another developer must review and merge, also configure:
 
@@ -207,7 +215,7 @@ If another developer must review and merge, also configure:
 GITLAB_REVIEWER_IDS="12345,67890"
 ```
 
-Then use `notion-auto push --message "Implement ticket changes"` instead. It commits all current changes, pushes, creates or reuses the MR, and assigns the reviewers without enabling auto-merge.
+Then use `notion-auto push --message "Implement ticket changes"` instead. It commits all current changes, pushes, creates or reuses the MR, assigns the reviewers, and writes the same ticket-aware MR description without enabling auto-merge.
 
 ---
 
@@ -233,6 +241,7 @@ Manual fallback:
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `notion-auto: command not found` | PATH | Add `~/.local/bin` to PATH; re-run `npm link` |
+| `Bridge did not report ready state in time` | Baseline query of a large ticket DB exceeded the old 15s launcher wait | Restart with the updated toolkit (ready wait is 180s). Wait for `Automation is ready` before changing ticket status. |
 | Bridge never picks ticket | Status text mismatch | `NOTION_TRIGGER_STATUS` must match Notion option **exactly** |
 | Bridge never picks ticket | Assignee filter | Confirm page assignee is in `NOTION_ASSIGNEE_IDS` |
 | Bridge never picks ticket | Wrong property names | Fix `NOTION_STATUS_PROPERTY` / `NOTION_ASSIGNEE_PROPERTY` |
@@ -240,6 +249,8 @@ Manual fallback:
 | `multiple data sources are not supported` | Multi-source DB | Set `NOTION_DATA_SOURCE_ID` + `NOTION_API_VERSION="2025-09-03"` |
 | Check passes, intake fails | Git state | Ensure clean worktree if `NOTION_AGENT_GIT_REQUIRE_CLEAN_WORKTREE=true` |
 | Handoff empty / no attachments | Page permissions | Integration needs read access to page content and files |
+| Ticket stays in backlog after intake | Sprint not set / wrong option | Confirm `Sprint` property exists; set `NOTION_CURRENT_SPRINT` to exact option text; ensure integration can update pages |
+| Sub-tasks still in backlog | Cascade missed | Confirm `Sub-item` relation is populated; `NOTION_SPRINT_CASCADE_SUBITEMS=true` |
 | `GITLAB_TOKEN is required` | Done-flow not configured | Add token or use `--push-only true` |
 
 Full troubleshooting: `SETUP_GUIDE.md` § Troubleshooting.

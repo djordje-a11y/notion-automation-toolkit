@@ -53,6 +53,7 @@ const DEFAULT_API_URL = 'https://api.notion.com/v1';
 const DEFAULT_API_VERSION = '2022-06-28';
 const DEFAULT_RUNTIME_FILE = '.notion/runtime.json';
 const DEFAULT_STATE_FILE = '.notion/bridge-state.json';
+const DEFAULT_BRIDGE_READY_TIMEOUT_MS = 180000;
 const DEFAULT_REQUIRE_LOCAL_IGNORES = true;
 const REQUIRED_LOCAL_IGNORE_ENTRIES = ['.notion/', '.notion.local', 'notion-handoff.md'];
 
@@ -903,18 +904,57 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function resolveBridgeReadyTimeoutMs() {
+  const fromMs = Number.parseInt(String(process.env.NOTION_BRIDGE_READY_TIMEOUT_MS || '').trim(), 10);
+  if (Number.isFinite(fromMs) && fromMs > 0) return fromMs;
+  const fromSeconds = Number.parseInt(
+    String(process.env.NOTION_BRIDGE_READY_TIMEOUT_SECONDS || '').trim(),
+    10,
+  );
+  if (Number.isFinite(fromSeconds) && fromSeconds > 0) return fromSeconds * 1000;
+  return DEFAULT_BRIDGE_READY_TIMEOUT_MS;
+}
+
+function isBridgeStateReady(state, expectedPid) {
+  const statePid = Number(state?.pid || 0);
+  if (!state?.running || statePid !== Number(expectedPid || 0)) return false;
+  // Older bridges only wrote `running`. New bridges also set baselineReady after
+  // the full-database snapshot; wait for that when the field is present.
+  if (Object.prototype.hasOwnProperty.call(state, 'baselineReady')) {
+    return Boolean(state.baselineReady);
+  }
+  return true;
+}
+
 async function waitForBridgeReady(config, expectedPid) {
-  const deadline = Date.now() + 15000;
+  const timeoutMs = resolveBridgeReadyTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
+  print(
+    `Waiting for bridge baseline (timeout ${Math.round(timeoutMs / 1000)}s; large ticket databases can take a minute)...`,
+    colors.dim,
+  );
   while (Date.now() < deadline) {
+    if (!isPidAlive(expectedPid)) {
+      const state = await readJsonFileSafe(config.stateFile, null);
+      const lastError = String(state?.lastError || '').trim();
+      fail(
+        `Bridge process exited before becoming ready (pid=${expectedPid}, state file: ${config.stateFile}).` +
+          (lastError ? ` Last error: ${lastError}` : ''),
+      );
+    }
     const state = await readJsonFileSafe(config.stateFile, null);
-    const statePid = Number(state?.pid || 0);
-    if (state?.running && statePid === Number(expectedPid || 0)) {
+    if (isBridgeStateReady(state, expectedPid)) {
       return state;
     }
     await sleep(500);
   }
 
-  fail(`Bridge did not report ready state in time (state file: ${config.stateFile}).`);
+  const state = await readJsonFileSafe(config.stateFile, null);
+  const lastError = String(state?.lastError || '').trim();
+  const hint = lastError
+    ? ` Last error: ${lastError}`
+    : ' The first-run baseline query paginates the whole ticket database before polling starts.';
+  fail(`Bridge did not report ready state in time (state file: ${config.stateFile}).${hint}`);
 }
 
 async function startAutomation(config) {
@@ -970,7 +1010,15 @@ async function startAutomation(config) {
     stopAll(1);
   });
 
-  await waitForBridgeReady(config, state.bridgeChild.pid);
+  try {
+    await waitForBridgeReady(config, state.bridgeChild.pid);
+  } catch (error) {
+    state.stopping = true;
+    if (state.bridgeChild && !state.bridgeChild.killed) {
+      state.bridgeChild.kill('SIGTERM');
+    }
+    throw error;
+  }
 
   await writeRuntimeFile(config.runtimeFile, {
     startedAt: new Date().toISOString(),

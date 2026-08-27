@@ -81,6 +81,10 @@ const DEFAULT_PUBLISH_ROOT_HANDOFF_ALIAS = true;
 const DEFAULT_HANDOFF_ALIAS_WORDS = 3;
 const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
 const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
+const DEFAULT_SPRINT_ASSIGN_ON_INTAKE = true;
+const DEFAULT_SPRINT_PROPERTY = 'Sprint';
+const DEFAULT_SUBITEM_PROPERTY = 'Sub-item';
+const DEFAULT_SPRINT_CASCADE_SUBITEMS = true;
 
 const DEFAULT_RULES = [
   'Ticket intake rules:',
@@ -91,6 +95,12 @@ const DEFAULT_RULES = [
   '- After reading the handoff `.md` and confirming the prepared branch, rename chat to the branch name without configured prefix.',
   '- NEVER modify or update the handoff `.md` file. It is read-once input, not a living document.',
   '- Output must include: ticket understanding, proposed branch name, solution approach, risks/blockers.',
+  '',
+  'Sprint / backlog rules (mandatory):',
+  '- New tickets stay in backlog while Sprint is empty. Starting work means assigning the current Sprint so the item leaves backlog.',
+  '- Intake assigns Sprint on the triggered ticket and cascades the same Sprint to Sub-item pages when those are still empty.',
+  '- If you manually put a parent into a sprint, also set Sprint on all Sub-items (sub-tasks remain in backlog otherwise).',
+  '- Do not leave started work with an empty Sprint property.',
   '',
   'Testing rules (CRITICAL — violating these will crash the machine):',
   '- NEVER run the full test suite (`npm test`, `npm run test:unit`, etc.). Only run specific test files related to your changes.',
@@ -103,7 +113,7 @@ const DEFAULT_RULES = [
   '- Do not hardcode personal names/emails in shared rules or ticket comments.',
   '- Use custom signing/author commit command only when user explicitly asks for it.',
   '- If user does not explicitly request custom signing/author, use normal commit flow (`git commit -m "<message>"`).',
-  '- Write a meaningful commit message: fix|feat|chore subject + user-visible outcome + why (avoid vague messages).',
+  '- Write a meaningful commit message: fix|feat|chore subject + user-visible outcome + why (avoid vague messages). These messages become the GitLab MR Solution section.',
   '- When user says task is done: commit changes with a meaningful message, then run `notion-auto done` to push, create MR, and enable auto-merge.',
   '- Do NOT post comments to Notion or update ticket status unless the user explicitly asks.',
   '',
@@ -393,6 +403,13 @@ async function loadNotionEnvValues(args) {
     'NOTION_AGENT_HANDOFF_ALIAS_WORDS',
     'NOTION_AGENT_HANDOFF_ALIAS_MAP_FILE',
     'NOTION_AGENT_ACTIVE_HANDOFFS_FILE',
+    'NOTION_DATABASE_ID',
+    'NOTION_DATA_SOURCE_ID',
+    'NOTION_SPRINT_ASSIGN_ON_INTAKE',
+    'NOTION_SPRINT_PROPERTY',
+    'NOTION_CURRENT_SPRINT',
+    'NOTION_SUBITEM_PROPERTY',
+    'NOTION_SPRINT_CASCADE_SUBITEMS',
   ];
 
   const values = {};
@@ -736,6 +753,57 @@ function buildRuntimeConfig(args, envValues) {
         envValues.NOTION_AGENT_SECTION_PROPERTY ||
         getOptionalArg(args, 'section-property', DEFAULT_SECTION_PROPERTY),
     ).trim(),
+    databaseId: String(
+      process.env.NOTION_DATABASE_ID || envValues.NOTION_DATABASE_ID || '',
+    ).trim(),
+    dataSourceId: String(
+      process.env.NOTION_DATA_SOURCE_ID || envValues.NOTION_DATA_SOURCE_ID || '',
+    ).trim(),
+    sprintAssignOnIntake: parseBoolean(
+      getOptionalArg(
+        args,
+        'sprint-assign-on-intake',
+        process.env.NOTION_SPRINT_ASSIGN_ON_INTAKE ||
+          envValues.NOTION_SPRINT_ASSIGN_ON_INTAKE ||
+          String(DEFAULT_SPRINT_ASSIGN_ON_INTAKE),
+      ),
+      DEFAULT_SPRINT_ASSIGN_ON_INTAKE,
+    ),
+    sprintPropertyName: String(
+      getOptionalArg(
+        args,
+        'sprint-property',
+        process.env.NOTION_SPRINT_PROPERTY ||
+          envValues.NOTION_SPRINT_PROPERTY ||
+          DEFAULT_SPRINT_PROPERTY,
+      ),
+    ).trim() || DEFAULT_SPRINT_PROPERTY,
+    currentSprint: String(
+      getOptionalArg(
+        args,
+        'current-sprint',
+        process.env.NOTION_CURRENT_SPRINT || envValues.NOTION_CURRENT_SPRINT || '',
+      ),
+    ).trim(),
+    subitemPropertyName: String(
+      getOptionalArg(
+        args,
+        'subitem-property',
+        process.env.NOTION_SUBITEM_PROPERTY ||
+          envValues.NOTION_SUBITEM_PROPERTY ||
+          DEFAULT_SUBITEM_PROPERTY,
+      ),
+    ).trim() || DEFAULT_SUBITEM_PROPERTY,
+    sprintCascadeSubitems: parseBoolean(
+      getOptionalArg(
+        args,
+        'sprint-cascade-subitems',
+        process.env.NOTION_SPRINT_CASCADE_SUBITEMS ||
+          envValues.NOTION_SPRINT_CASCADE_SUBITEMS ||
+          String(DEFAULT_SPRINT_CASCADE_SUBITEMS),
+      ),
+      DEFAULT_SPRINT_CASCADE_SUBITEMS,
+    ),
   };
 }
 
@@ -871,6 +939,254 @@ function resolveStatusText(page, statusPropertyName = 'Status') {
   if (explicitText) return explicitText;
   const statusLike = findPropertyByType(page, 'status') || findPropertyByType(page, 'select');
   return propertyValueToText(statusLike);
+}
+
+function getIsoWeekNumber(date = new Date()) {
+  const utc = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = utc.getUTCDay() || 7;
+  utc.setUTCDate(utc.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+  return Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
+}
+
+function getRelationIds(property) {
+  if (!property || typeof property !== 'object') return [];
+  if (String(property.type || '').trim() !== 'relation') return [];
+  return (Array.isArray(property.relation) ? property.relation : [])
+    .map((entry) => String(entry?.id || '').trim())
+    .filter(Boolean);
+}
+
+function getMultiSelectNames(property) {
+  if (!property || typeof property !== 'object') return [];
+  const type = String(property.type || '').trim();
+  if (type === 'multi_select') {
+    return (Array.isArray(property.multi_select) ? property.multi_select : [])
+      .map((entry) => String(entry?.name || '').trim())
+      .filter(Boolean);
+  }
+  if (type === 'select') {
+    const name = String(property.select?.name || '').trim();
+    return name ? [name] : [];
+  }
+  return [];
+}
+
+function pickSprintOptionForWeek(optionNames, weekNumber) {
+  const options = (Array.isArray(optionNames) ? optionNames : [])
+    .map((name) => String(name || '').trim())
+    .filter(Boolean);
+  if (options.length === 0) return '';
+
+  const exact = options.find((name) => {
+    const match = name.match(/^sprint\s*week\s*(\d+)$/i);
+    return match && Number.parseInt(match[1], 10) === weekNumber;
+  });
+  if (exact) return exact;
+
+  const ranges = options
+    .map((name) => {
+      const match = name.match(/^sprint\s*week\s*(\d+)\s*\+\s*(\d+)$/i);
+      if (!match) return null;
+      const start = Number.parseInt(match[1], 10);
+      const end = Number.parseInt(match[2], 10);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+      if (weekNumber < Math.min(start, end) || weekNumber > Math.max(start, end)) return null;
+      return { name, span: Math.abs(end - start) };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.span - right.span);
+  if (ranges.length > 0) return ranges[0].name;
+
+  const containsWeek = options.find((name) => {
+    const numbers = [...String(name).matchAll(/\d+/g)].map((entry) => Number.parseInt(entry[0], 10));
+    return numbers.includes(weekNumber);
+  });
+  return containsWeek || '';
+}
+
+function extractSelectOptionNames(propertySchema) {
+  if (!propertySchema || typeof propertySchema !== 'object') return [];
+  const type = String(propertySchema.type || '').trim();
+  if (type === 'multi_select') {
+    return (propertySchema.multi_select?.options || [])
+      .map((entry) => String(entry?.name || '').trim())
+      .filter(Boolean);
+  }
+  if (type === 'select') {
+    return (propertySchema.select?.options || [])
+      .map((entry) => String(entry?.name || '').trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function listSprintOptionNames(config, page) {
+  const sprintPropertyName = config.sprintPropertyName;
+  const ids = uniqueNonEmpty([
+    config.dataSourceId,
+    config.databaseId,
+    page?.parent?.data_source_id,
+    page?.parent?.database_id,
+  ]);
+
+  for (const id of ids) {
+    for (const endpoint of [`/data_sources/${id}`, `/databases/${id}`]) {
+      try {
+        const schema = await notionRequest(config, endpoint, { method: 'GET' });
+        const propertySchema = schema?.properties?.[sprintPropertyName];
+        const options = extractSelectOptionNames(propertySchema);
+        if (options.length > 0) return options;
+      } catch {
+        // try next endpoint/id
+      }
+    }
+  }
+  return [];
+}
+
+async function resolveCurrentSprintName(config, page) {
+  const configured = String(config.currentSprint || '').trim();
+  if (configured && !['auto', 'detect', 'current'].includes(normalize(configured))) {
+    return { sprintName: configured, source: 'config' };
+  }
+
+  const weekNumber = getIsoWeekNumber(new Date());
+  const options = await listSprintOptionNames(config, page);
+  const matched = pickSprintOptionForWeek(options, weekNumber);
+  if (matched) {
+    return { sprintName: matched, source: `iso-week-${weekNumber}` };
+  }
+
+  return {
+    sprintName: '',
+    source: 'unresolved',
+    reason: `Could not resolve current sprint for ISO week ${weekNumber}. Set NOTION_CURRENT_SPRINT.`,
+  };
+}
+
+function buildSprintPropertyPayload(propertyType, sprintName) {
+  const type = String(propertyType || '').trim();
+  if (type === 'multi_select') {
+    return { multi_select: [{ name: sprintName }] };
+  }
+  if (type === 'select') {
+    return { select: { name: sprintName } };
+  }
+  return null;
+}
+
+async function setPageSprintIfEmpty(config, pageId, sprintName, { force = false } = {}) {
+  const page = await notionRequest(config, `/pages/${encodeURIComponent(pageId)}`, {
+    method: 'GET',
+  });
+  const property = findPropertyByName(page, config.sprintPropertyName);
+  if (!property) {
+    return {
+      pageId,
+      updated: false,
+      reason: `property "${config.sprintPropertyName}" not found`,
+      page,
+    };
+  }
+
+  const existing = getMultiSelectNames(property);
+  if (!force && existing.length > 0) {
+    return {
+      pageId,
+      updated: false,
+      reason: existing.includes(sprintName) ? 'already set' : `already set (${existing.join(', ')})`,
+      page,
+    };
+  }
+
+  const payload = buildSprintPropertyPayload(property.type, sprintName);
+  if (!payload) {
+    return {
+      pageId,
+      updated: false,
+      reason: `unsupported sprint property type "${property.type}"`,
+      page,
+    };
+  }
+
+  const updatedPage = await notionRequest(config, `/pages/${encodeURIComponent(pageId)}`, {
+    method: 'PATCH',
+    body: {
+      properties: {
+        [config.sprintPropertyName]: payload,
+      },
+    },
+  });
+
+  return {
+    pageId,
+    updated: true,
+    reason: 'updated',
+    page: updatedPage && updatedPage.properties ? updatedPage : page,
+  };
+}
+
+async function assignSprintOnIntake(config, page) {
+  if (!config.sprintAssignOnIntake) {
+    return { attempted: false, reason: 'disabled', page };
+  }
+
+  const sprintProperty = findPropertyByName(page, config.sprintPropertyName);
+  if (!sprintProperty) {
+    return {
+      attempted: false,
+      reason: `sprint property "${config.sprintPropertyName}" not found on page`,
+      page,
+    };
+  }
+
+  const resolved = await resolveCurrentSprintName(config, page);
+  if (!resolved.sprintName) {
+    return {
+      attempted: true,
+      updated: false,
+      reason: resolved.reason || 'current sprint unresolved',
+      page,
+    };
+  }
+
+  const rootResult = await setPageSprintIfEmpty(config, config.pageId, resolved.sprintName);
+  const workingPage = rootResult.page || page;
+  if (workingPage?.properties) {
+    page.properties = workingPage.properties;
+  }
+  const subitemResults = [];
+
+  if (config.sprintCascadeSubitems) {
+    const subitemIds = getRelationIds(findPropertyByName(page, config.subitemPropertyName));
+    for (const subitemId of subitemIds) {
+      try {
+        const result = await setPageSprintIfEmpty(config, subitemId, resolved.sprintName);
+        subitemResults.push({
+          pageId: subitemId,
+          updated: result.updated,
+          reason: result.reason,
+        });
+      } catch (error) {
+        subitemResults.push({
+          pageId: subitemId,
+          updated: false,
+          reason: String(error?.message || error || 'update failed'),
+        });
+      }
+    }
+  }
+
+  return {
+    attempted: true,
+    sprintName: resolved.sprintName,
+    source: resolved.source,
+    updated: Boolean(rootResult.updated),
+    reason: rootResult.reason,
+    subitems: subitemResults,
+    page,
+  };
 }
 
 function normalizePropertySnapshot(properties) {
@@ -1254,11 +1570,11 @@ function buildIdeHandoffBody({
     ...(archiveLine ? [archiveLine] : []),
     '',
     'HARD STOP SAFETY CHECK (must be done before any edits):',
-    '1) Verify current workspace path exactly matches **Worktree path** above.',
-    '2) Verify current git branch exactly matches **Git branch** above.',
-    '3) If either check fails, do not edit any files. Stop and ask user to switch to the correct worktree chat/context.',
+    '1) Verify the **Worktree path** above exists and is checked out on the **Git branch** above: run `git -C "<worktree path>" branch --show-current` and compare.',
+    '2) Working from a window rooted at the **Root workspace** is fine (worktrees are nested inside it); do NOT compare the root workspace branch against **Git branch** — only the worktree branch matters.',
+    '3) If the worktree is missing or its branch does not match, do not edit any files. Stop and ask the user to re-run intake for this ticket.',
     '',
-    'Only modify code inside the worktree path listed above for this ticket. Do not mix files from other tasks/worktrees.',
+    'Only modify files under the worktree path listed above for this ticket. Do not mix files from other tasks/worktrees.',
     'Branch handoff files are kept in `.notion/handoffs/` and stable aliases are refreshed on each run.',
     '',
     '---',
@@ -1296,6 +1612,63 @@ async function readJsonFileSafe(filePath, fallbackValue) {
 async function writeJsonFile(filePath, payload) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+async function withJsonFileLock(filePath, fn, options = {}) {
+  const lockPath = `${filePath}.lock`;
+  const retries = Math.max(1, Number(options.retries || 50));
+  const delayMs = Math.max(10, Number(options.delayMs || 50));
+  let handle = null;
+
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      handle = await fs.open(lockPath, 'wx');
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  if (!handle) {
+    fail(`Timed out waiting for lock: ${lockPath}`);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      await handle.close();
+    } catch {
+      // ignore
+    }
+    try {
+      await fs.unlink(lockPath);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function upsertWorktreeMapEntry(mapFilePath, entry) {
+  const pageId = String(entry?.pageId || '').trim();
+  if (!pageId) fail('Cannot upsert worktree map entry without pageId.');
+
+  return withJsonFileLock(mapFilePath, async () => {
+    const mapData = await readJsonFileSafe(mapFilePath, { tickets: {} });
+    const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
+    const previous = tickets[pageId] && typeof tickets[pageId] === 'object' ? tickets[pageId] : {};
+    tickets[pageId] = {
+      ...previous,
+      ...entry,
+      pageId,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeJsonFile(mapFilePath, {
+      ...mapData,
+      tickets,
+    });
+    return tickets[pageId];
+  });
 }
 
 function resolvePathFromWorkspace(workspacePath, rawPath, fallbackValue = '') {
@@ -1349,17 +1722,48 @@ async function ensureTicketWorktree(config, page, branchName) {
   const pageId = String(page?.id || '').trim();
   const pageTitle = getPageTitle(page);
   const status = resolveStatusText(page, config.statusPropertyName);
-  const folderName = buildWorktreeFolderName(pageId, branchName);
-  const desiredPath = path.join(worktreeRoot, folderName);
+  const requestedBranch = String(branchName || '').trim();
+  if (!pageId) fail('Cannot create worktree without a Notion page id.');
+  if (!requestedBranch) fail('Cannot create worktree without a branch name.');
+
+  const mapEntryPayload = (worktreePath, branch) => ({
+    pageId,
+    pageTitle,
+    status,
+    branch,
+    worktreePath,
+  });
 
   await fs.mkdir(worktreeRoot, { recursive: true });
+
+  // Prefer an existing mapped worktree for this page, even if the branch candidate changed.
+  // This prevents duplicate worktrees like "foo" + "foo-clean" for the same ticket.
+  const mapData = await readJsonFileSafe(mapFilePath, { tickets: {} });
+  const existingMapEntry =
+    mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets[pageId] : null;
+  const mappedPath = String(existingMapEntry?.worktreePath || '').trim();
+  const mappedBranch = String(existingMapEntry?.branch || '').trim() || requestedBranch;
+  if (mappedPath) {
+    try {
+      await fs.access(mappedPath);
+      await upsertWorktreeMapEntry(mapFilePath, mapEntryPayload(mappedPath, mappedBranch));
+      return { path: mappedPath, reused: true, branch: mappedBranch };
+    } catch {
+      // Mapped path gone; fall through and recreate.
+    }
+  }
+
   let worktrees = await getGitWorktreeEntries(gitConfig);
-  const branchRef = `refs/heads/${branchName}`;
+  const branchRef = `refs/heads/${requestedBranch}`;
   let existingByBranch = worktrees.find((entry) => String(entry?.branchRef || '').trim() === branchRef);
   if (existingByBranch?.path) {
     try {
       await fs.access(existingByBranch.path);
-      return { path: existingByBranch.path, reused: true, branch: branchName };
+      await upsertWorktreeMapEntry(
+        mapFilePath,
+        mapEntryPayload(existingByBranch.path, requestedBranch),
+      );
+      return { path: existingByBranch.path, reused: true, branch: requestedBranch };
     } catch {
       // Stale git worktree registration (path removed manually). Prune and continue with fresh add.
       await runGit(['worktree', 'prune'], gitConfig);
@@ -1368,7 +1772,11 @@ async function ensureTicketWorktree(config, page, branchName) {
       if (existingByBranch?.path) {
         try {
           await fs.access(existingByBranch.path);
-          return { path: existingByBranch.path, reused: true, branch: branchName };
+          await upsertWorktreeMapEntry(
+            mapFilePath,
+            mapEntryPayload(existingByBranch.path, requestedBranch),
+          );
+          return { path: existingByBranch.path, reused: true, branch: requestedBranch };
         } catch {
           // Continue to re-create worktree at desired path below.
         }
@@ -1376,36 +1784,28 @@ async function ensureTicketWorktree(config, page, branchName) {
     }
   }
 
+  const folderName = buildWorktreeFolderName(pageId, requestedBranch);
+  const desiredPath = path.join(worktreeRoot, folderName);
+
   const branchExists = await hasGitRef(branchRef, gitConfig);
   if (branchExists) {
-    await runGit(['worktree', 'add', desiredPath, branchName], gitConfig);
-  } else if (await remoteBranchExists(config.gitRemote, branchName, gitConfig)) {
-    await runGit(['fetch', config.gitRemote, branchName], gitConfig);
-    await runGit(['worktree', 'add', '-B', branchName, desiredPath, `${config.gitRemote}/${branchName}`], gitConfig);
+    await runGit(['worktree', 'add', desiredPath, requestedBranch], gitConfig);
+  } else if (await remoteBranchExists(config.gitRemote, requestedBranch, gitConfig)) {
+    await runGit(['fetch', config.gitRemote, requestedBranch], gitConfig);
+    await runGit(
+      ['worktree', 'add', '-B', requestedBranch, desiredPath, `${config.gitRemote}/${requestedBranch}`],
+      gitConfig,
+    );
   } else {
     await runGit(['fetch', config.gitRemote, config.gitBaseBranch], gitConfig);
     await runGit(
-      ['worktree', 'add', '-b', branchName, desiredPath, `${config.gitRemote}/${config.gitBaseBranch}`],
+      ['worktree', 'add', '-b', requestedBranch, desiredPath, `${config.gitRemote}/${config.gitBaseBranch}`],
       gitConfig,
     );
   }
 
-  const mapData = await readJsonFileSafe(mapFilePath, { tickets: {} });
-  const tickets = mapData?.tickets && typeof mapData.tickets === 'object' ? mapData.tickets : {};
-  tickets[pageId] = {
-    pageId,
-    pageTitle,
-    status,
-    branch: branchName,
-    worktreePath: desiredPath,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeJsonFile(mapFilePath, {
-    ...mapData,
-    tickets,
-  });
-
-  return { path: desiredPath, reused: false, branch: branchName };
+  await upsertWorktreeMapEntry(mapFilePath, mapEntryPayload(desiredPath, requestedBranch));
+  return { path: desiredPath, reused: false, branch: requestedBranch };
 }
 
 async function writeActiveTicketsIndex(config) {
@@ -2481,6 +2881,11 @@ function printUsage() {
   print(`  --handoff-alias-map-file <path> (default ${DEFAULT_HANDOFF_ALIAS_MAP_FILE})`);
   print(`  --active-handoffs-file <path> (default ${DEFAULT_ACTIVE_HANDOFFS_FILE})`);
   print('  --root-workspace <path>');
+  print('  --sprint-assign-on-intake true|false (default true)');
+  print(`  --sprint-property <name> (default ${DEFAULT_SPRINT_PROPERTY})`);
+  print('  --current-sprint "<Sprint Week N[+M]>" (optional; auto-detect by ISO week)');
+  print(`  --subitem-property <name> (default ${DEFAULT_SUBITEM_PROPERTY})`);
+  print('  --sprint-cascade-subitems true|false (default true)');
   print('  --dispatch');
   print('  --agent-command "<shell command>"');
   print('  --env-file <path>');
@@ -2517,7 +2922,43 @@ async function main(argv = process.argv) {
   }
 
   const pageSnapshot = await getPageDetails(config);
-  const page = pageSnapshot.page;
+  let page = pageSnapshot.page;
+
+  try {
+    const sprintAssignment = await assignSprintOnIntake(config, page);
+    if (sprintAssignment.page) page = sprintAssignment.page;
+    pageSnapshot.page = page;
+    if (!sprintAssignment.attempted) {
+      print(`Sprint assign: skipped (${sprintAssignment.reason})`, colors.dim);
+    } else if (!sprintAssignment.sprintName) {
+      print(`Sprint assign: skipped (${sprintAssignment.reason})`, colors.yellow);
+    } else {
+      const rootLabel = sprintAssignment.updated
+        ? `set "${sprintAssignment.sprintName}"`
+        : `kept existing (${sprintAssignment.reason})`;
+      print(
+        `Sprint assign: ${rootLabel} [source=${sprintAssignment.source || 'config'}]`,
+        sprintAssignment.updated ? colors.green : colors.dim,
+      );
+      const subitems = Array.isArray(sprintAssignment.subitems) ? sprintAssignment.subitems : [];
+      if (subitems.length > 0) {
+        const updatedCount = subitems.filter((entry) => entry.updated).length;
+        print(
+          `Sprint cascade: ${updatedCount}/${subitems.length} sub-item(s) updated to "${sprintAssignment.sprintName}"`,
+          updatedCount > 0 ? colors.green : colors.dim,
+        );
+        for (const entry of subitems.filter((item) => !item.updated)) {
+          print(`  sub-item ${entry.pageId}: ${entry.reason}`, colors.dim);
+        }
+      }
+    }
+  } catch (error) {
+    print(
+      `Sprint assign: failed (continuing intake): ${error?.message || String(error)}`,
+      colors.yellow,
+    );
+  }
+
   const sectionContext = resolveSectionContext(page, config.sectionPropertyName);
   const branchResolution = buildBranchCandidate(
     config.branchPrefix,

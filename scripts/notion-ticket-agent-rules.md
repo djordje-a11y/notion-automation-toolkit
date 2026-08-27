@@ -8,6 +8,12 @@ Ticket intake rules:
 - After reading the handoff `.md` and confirming the prepared branch, rename the current chat to match the branch name without the configured prefix (example: `dev/notion/fix-login-timeout` -> `fix-login-timeout`).
 - If ticket data is insufficient, list exact missing inputs needed to proceed.
 
+Sprint / backlog rules (mandatory):
+- New tickets stay in backlog while the Sprint property is empty. Starting work means assigning the current Sprint so the item leaves backlog.
+- Intake automation assigns Sprint on the triggered ticket and cascades the same Sprint to Sub-item pages when those are still empty.
+- If you manually move a parent into a sprint, also set the same Sprint on all Sub-items (sub-tasks remain visible in backlog otherwise).
+- Do not leave started work with an empty Sprint property.
+
 Model usage (token cost control):
 - Use your selected premium model ONLY for ticket understanding, solution design, code edits, and debugging.
 - For auxiliary work, delegate to a fast/cheap subagent (model: composer-2.5 or auto):
@@ -24,6 +30,7 @@ Completion and handoff rules (mandatory when user asks to commit):
   - use `fix|feat|chore` style subject
   - state user-visible outcome and why
   - avoid vague messages like "update" or "changes"
+  - `notion-auto done` / `notion-auto push` use these commit messages as the MR "Solution" section, plus Notion ticket context and link
 - Staged-first closeout workflow:
   - User reviews and stages intended files, then tells agent that changes are staged.
   - On command `staged push` (or equivalent intent), agent must:

@@ -68,11 +68,31 @@ const DEFAULT_ACTIVE_TICKETS_FILE = '.notion/active-tickets.md';
 const DEFAULT_WORKTREE_AUTO_REMOVE_ON_CLEANUP = true;
 const DEFAULT_HANDOFF_ALIAS_MAP_FILE = '.notion/handoff-alias-map.json';
 const DEFAULT_ACTIVE_HANDOFFS_FILE = '.notion/active-handoffs.md';
-const DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE = true;
+// Disabled by default: merge sync must never regress QA statuses after restart.
+const DEFAULT_GITLAB_STATUS_SYNC_ON_MERGE = false;
 const DEFAULT_GITLAB_TARGET_BRANCH = 'dev';
 const DEFAULT_GITLAB_REMOTE = 'origin';
 const DEFAULT_GITLAB_MERGED_STATUS = 'Fix Deployed Dev';
 const DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS = 30;
+// Ordered earliest -> latest. Merge sync only moves tickets forward to the merged status.
+const DEFAULT_GITLAB_MERGE_SYNC_STATUS_ORDER = [
+  'Not Started',
+  'On hold',
+  'Blocked',
+  'In progress',
+  'Pending Deployment Dev',
+  'Fix Deployed Dev',
+  'Fix Not Working Dev',
+  'Fix Confirmed Dev',
+  'Pending Deployment Accept',
+  'Fix Deployed Accept',
+  'Fix Not Working Accept',
+  'Fix Confirmed Accept',
+  'Pending Deployment Prod',
+  'Fix Deployed Prod',
+  'Fix Confirmed Prod',
+  'Done',
+];
 const DEFAULT_ON_MATCH_COMMAND = `node "${path.resolve(
   TOOLKIT_ROOT,
   'scripts/notion-agent-intake.js',
@@ -586,6 +606,10 @@ function buildRuntimeConfig(args, envValues) {
         envValues.GITLAB_MERGED_NOTION_STATUS ||
         DEFAULT_GITLAB_MERGED_STATUS,
     ).trim(),
+    gitlabMergeSyncStatusOrder: parseStatusOrderList(
+      process.env.GITLAB_MERGE_SYNC_STATUS_ORDER || envValues.GITLAB_MERGE_SYNC_STATUS_ORDER,
+      DEFAULT_GITLAB_MERGE_SYNC_STATUS_ORDER,
+    ),
     gitlabSyncIntervalMs:
       Math.max(
         5,
@@ -601,6 +625,51 @@ function buildRuntimeConfig(args, envValues) {
         ),
       ) * 1000,
   };
+}
+
+function parseStatusOrderList(rawValue, fallbackList) {
+  const fallback = Array.isArray(fallbackList) ? fallbackList.slice() : [];
+  const raw = String(rawValue || '').trim();
+  if (!raw) return fallback;
+  const parsed = raw
+    .split('|')
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+function statusRank(statusText, statusOrder) {
+  const needle = normalize(statusText);
+  if (!needle) return -1;
+  const order = Array.isArray(statusOrder) ? statusOrder : [];
+  for (let index = 0; index < order.length; index += 1) {
+    if (normalize(order[index]) === needle) return index;
+  }
+  return -1;
+}
+
+function canAdvanceNotionStatus(currentStatus, targetStatus, statusOrder) {
+  const currentRank = statusRank(currentStatus, statusOrder);
+  const targetRank = statusRank(targetStatus, statusOrder);
+  if (targetRank < 0) {
+    return {
+      allowed: false,
+      reason: `target status '${targetStatus}' is not in GITLAB_MERGE_SYNC_STATUS_ORDER`,
+    };
+  }
+  if (currentRank < 0) {
+    return {
+      allowed: false,
+      reason: `current status '${currentStatus || '(empty)'}' is unknown; refusing to overwrite`,
+    };
+  }
+  if (currentRank >= targetRank) {
+    return {
+      allowed: false,
+      reason: `current status '${currentStatus}' is at/after '${targetStatus}'; refusing regression`,
+    };
+  }
+  return { allowed: true, reason: 'ok' };
 }
 
 function normalizeTextList(values) {
@@ -900,10 +969,12 @@ function resolveQueryTarget(config) {
   };
 }
 
-async function queryDatabaseSince(config, cursorIso) {
+async function queryDatabaseSince(config, cursorIso, options = {}) {
   const pages = [];
   let nextCursor = '';
+  let requestCount = 0;
   const target = resolveQueryTarget(config);
+  const logProgress = Boolean(options.logProgress);
 
   do {
     const body = {
@@ -930,6 +1001,14 @@ async function queryDatabaseSince(config, cursorIso) {
     for (const entry of results) {
       if (String(entry?.object || '').trim() !== 'page') continue;
       pages.push(entry);
+    }
+
+    requestCount += 1;
+    if (logProgress) {
+      print(
+        `Baseline query page ${requestCount}: ${pages.length} ticket(s) so far...`,
+        colors.dim,
+      );
     }
 
     if (data?.has_more && data?.next_cursor) {
@@ -961,6 +1040,28 @@ function buildTicketStatusSnapshot(pages, statusPropertyName) {
 
 function buildDedupeKey(pageId, editedAt, statusText) {
   return [String(pageId || ''), String(editedAt || ''), String(statusText || '')].join('|');
+}
+
+async function lookupIngestedTicket(config, pageId) {
+  const id = String(pageId || '').trim();
+  if (!id) return null;
+  const worktreeMap = await readJsonFileSafe(config.worktreeMapFile, { tickets: {} });
+  const worktree = worktreeMap?.tickets?.[id];
+  if (worktree && typeof worktree === 'object') {
+    return {
+      worktreePath: String(worktree.worktreePath || '').trim(),
+      branch: String(worktree.branch || '').trim(),
+    };
+  }
+  const aliasMap = await readJsonFileSafe(config.handoffAliasMapFile, { aliases: {} });
+  const alias = aliasMap?.aliases?.[id];
+  if (alias && typeof alias === 'object') {
+    return {
+      worktreePath: String(alias.worktreePath || '').trim(),
+      branch: String(alias.branch || '').trim(),
+    };
+  }
+  return null;
 }
 
 async function cleanupTicketIntakeArtifacts(config, pageId) {
@@ -1055,11 +1156,11 @@ async function resolveGitlabProjectRef(config) {
 
 async function syncMergedMergeRequestsToNotion(config) {
   if (!config.gitlabStatusSyncOnMerge) {
-    return { attempted: false, checked: 0, updated: 0 };
+    return { attempted: false, checked: 0, updated: 0, skipped: 0 };
   }
   const now = Date.now();
   if (now - lastGitlabMergeSyncAtMs < config.gitlabSyncIntervalMs) {
-    return { attempted: false, checked: 0, updated: 0 };
+    return { attempted: false, checked: 0, updated: 0, skipped: 0 };
   }
   lastGitlabMergeSyncAtMs = now;
 
@@ -1071,7 +1172,7 @@ async function syncMergedMergeRequestsToNotion(config) {
       );
       gitlabSyncConfigWarningPrinted = true;
     }
-    return { attempted: false, checked: 0, updated: 0 };
+    return { attempted: false, checked: 0, updated: 0, skipped: 0 };
   }
 
   const mapData = await readJsonFileSafe(config.worktreeMapFile, { tickets: {} });
@@ -1079,11 +1180,20 @@ async function syncMergedMergeRequestsToNotion(config) {
   const entries = Object.values(tickets).filter((entry) => entry && typeof entry === 'object');
   let checked = 0;
   let updated = 0;
+  let skipped = 0;
+  let mapDirty = false;
+  const targetStatus = String(
+    config.gitlabMergedNotionStatus || config.cleanupStatus || DEFAULT_GITLAB_MERGED_STATUS,
+  ).trim();
 
   for (const entry of entries) {
     const pageId = String(entry.pageId || '').trim();
     const branch = String(entry.branch || '').trim();
     if (!pageId || !branch) continue;
+    if (entry.mergeSyncCompleted) {
+      skipped += 1;
+      continue;
+    }
     checked += 1;
     try {
       const mrs = await gitlabRequest(
@@ -1100,18 +1210,62 @@ async function syncMergedMergeRequestsToNotion(config) {
       const mrIid = String(mergedMr.iid || '').trim();
       const dedupeKey = `merged-sync|${pageId}|${mrIid}|${mergedAt}`;
       if (shouldSkipAsDuplicate(dedupeKey, config.dedupeWindowMs)) continue;
-      const statusResult = await updateNotionPageStatus(
-        config,
-        pageId,
-        config.gitlabMergedNotionStatus || config.cleanupStatus,
+
+      const page = await notionRequest(config, `/pages/${encodeURIComponent(pageId)}`, {
+        method: 'GET',
+      });
+      const currentStatus = resolveStatusText(page, config.statusPropertyName);
+      const advanceCheck = canAdvanceNotionStatus(
+        currentStatus,
+        targetStatus,
+        config.gitlabMergeSyncStatusOrder,
       );
+
+      if (!advanceCheck.allowed) {
+        skipped += 1;
+        tickets[pageId] = {
+          ...entry,
+          status: currentStatus || entry.status || '',
+          mergeSyncCompleted: true,
+          mergeSyncSkippedReason: advanceCheck.reason,
+          mergeSyncedAt: new Date().toISOString(),
+          mergeSyncMrIid: mrIid || entry.mergeSyncMrIid || '',
+          mergeSyncMergedAt: mergedAt || entry.mergeSyncMergedAt || '',
+          updatedAt: new Date().toISOString(),
+        };
+        mapDirty = true;
+        print(
+          `Merge sync skipped page ${pageId}: ${advanceCheck.reason}`,
+          colors.dim,
+        );
+        continue;
+      }
+
+      const statusResult = await updateNotionPageStatus(config, pageId, targetStatus);
+      tickets[pageId] = {
+        ...entry,
+        status: statusResult.updated ? targetStatus : currentStatus || entry.status || '',
+        mergeSyncCompleted: true,
+        mergeSyncedAt: new Date().toISOString(),
+        mergeSyncMrIid: mrIid || '',
+        mergeSyncMergedAt: mergedAt || '',
+        updatedAt: new Date().toISOString(),
+      };
+      mapDirty = true;
+
       if (statusResult.updated) {
         updated += 1;
         const mrUrl = String(mergedMr.web_url || '').trim();
         print(
-          `Merge sync: page ${pageId} set to '${config.gitlabMergedNotionStatus}'` +
+          `Merge sync: page ${pageId} set to '${targetStatus}'` +
             (mrUrl ? ` from MR ${mrUrl}` : '.'),
           colors.green,
+        );
+      } else {
+        skipped += 1;
+        print(
+          `Merge sync skipped page ${pageId}: ${statusResult.reason || 'not updated'}`,
+          colors.dim,
         );
       }
     } catch (error) {
@@ -1122,7 +1276,12 @@ async function syncMergedMergeRequestsToNotion(config) {
     }
   }
 
-  return { attempted: true, checked, updated };
+  if (mapDirty) {
+    await writeJsonFile(config.worktreeMapFile, { ...mapData, tickets });
+    await writeActiveTicketsIndex(config, tickets);
+  }
+
+  return { attempted: true, checked, updated, skipped };
 }
 
 async function writeActiveTicketsIndex(config, ticketsMap) {
@@ -1171,18 +1330,26 @@ async function cleanupTicketWorktreeTracking(config, pageId, statusText, pageTit
     const safetyCheck = await evaluateWorktreeCleanupSafety(config, worktreePath);
     if (!safetyCheck.safeToRemove) {
       removeError = safetyCheck.reason || 'worktree removal blocked by safety guard';
+    } else if (safetyCheck.reason === 'worktree path already missing') {
+      removedWorktree = true;
     } else {
       try {
         const result = await runCommandCapture(
           'git',
-          ['worktree', 'remove', worktreePath],
+          ['worktree', 'remove', '--force', worktreePath],
           { cwd: config.rootWorkspace, env: process.env },
         );
         if (!result.signal && result.code === 0) {
           removedWorktree = true;
         } else {
           const details = String(result.stderr || result.stdout || '').trim();
-          removeError = details || `exit code ${result.code}${result.signal ? ` signal ${result.signal}` : ''}`;
+          // Treat "not a working tree" / missing path as already cleaned up.
+          if (/not a working tree|no such file|does not exist/i.test(details)) {
+            removedWorktree = true;
+          } else {
+            removeError =
+              details || `exit code ${result.code}${result.signal ? ` signal ${result.signal}` : ''}`;
+          }
         }
       } catch (error) {
         removeError = String(error?.message || error || 'unknown git worktree remove error');
@@ -1215,6 +1382,16 @@ async function cleanupTicketWorktreeTracking(config, pageId, statusText, pageTit
 }
 
 async function evaluateWorktreeCleanupSafety(config, worktreePath) {
+  try {
+    await fs.access(worktreePath);
+  } catch {
+    // Path already gone (manual delete / prior cleanup). Safe to drop map entry.
+    return {
+      safeToRemove: true,
+      reason: 'worktree path already missing',
+    };
+  }
+
   const statusResult = await runCommandCapture('git', ['-C', worktreePath, 'status', '--porcelain=v1'], {
     cwd: config.rootWorkspace,
     env: process.env,
@@ -1587,10 +1764,9 @@ function printUsage() {
 }
 
 async function runPollingLoop(config) {
-  const baselinePages = await queryDatabaseSince(config, '');
-  const ticketStatuses = buildTicketStatusSnapshot(baselinePages, config.statusPropertyName);
   const startedAt = new Date().toISOString();
-  let cursorIso = new Date().toISOString();
+  let cursorIso = startedAt;
+  let ticketStatuses = {};
   await writeStateFile(config.stateFile, {
     startedAt,
     pid: process.pid,
@@ -1598,6 +1774,27 @@ async function runPollingLoop(config) {
     lastPollAt: null,
     lastError: null,
     running: true,
+    baselineReady: false,
+    databaseId: config.databaseId,
+    dataSourceId: config.dataSourceId || null,
+    triggerStatus: config.triggerStatus,
+    ticketStatuses,
+  });
+  print(
+    'Capturing ticket status baseline (large databases can take a minute)...',
+    colors.dim,
+  );
+  const baselinePages = await queryDatabaseSince(config, '', { logProgress: true });
+  ticketStatuses = buildTicketStatusSnapshot(baselinePages, config.statusPropertyName);
+  cursorIso = new Date().toISOString();
+  await writeStateFile(config.stateFile, {
+    startedAt,
+    pid: process.pid,
+    cursor: cursorIso,
+    lastPollAt: null,
+    lastError: null,
+    running: true,
+    baselineReady: true,
     databaseId: config.databaseId,
     dataSourceId: config.dataSourceId || null,
     triggerStatus: config.triggerStatus,
@@ -1702,13 +1899,23 @@ async function runPollingLoop(config) {
         const matchedPageTitle = String(filterResult.metadata?.title || pageTitle || pageId).trim();
         if (!enteredTriggerStatus) {
           ignoredCount += 1;
-          const transitionReason = hadPreviousStatus
-            ? `status remained '${statusText}' (previously '${previousStatus}')`
-            : 'no previous status baseline exists';
-          print(
-            `Ignored page ${pageId} (${matchedPageTitle}): ${transitionReason}; no trigger-status transition detected.`,
-            colors.dim,
-          );
+          const ingested = await lookupIngestedTicket(config, pageId);
+          if (ingested) {
+            print(
+              `Ignored page ${pageId} (${matchedPageTitle}): already ingested` +
+                (ingested.branch ? ` on ${ingested.branch}` : '') +
+                `; a later Notion edit (sprint/intake) is not a new trigger.`,
+              colors.dim,
+            );
+          } else {
+            const transitionReason = hadPreviousStatus
+              ? `status remained '${statusText}' (previously '${previousStatus}')`
+              : 'no previous status baseline exists';
+            print(
+              `Ignored page ${pageId} (${matchedPageTitle}): ${transitionReason}; no trigger-status transition detected.`,
+              colors.dim,
+            );
+          }
           continue;
         }
         const dedupeKey = buildDedupeKey(pageId, editedAt, statusText);
@@ -1735,9 +1942,9 @@ async function runPollingLoop(config) {
       }
 
       const mergeSyncResult = await syncMergedMergeRequestsToNotion(config);
-      if (mergeSyncResult.attempted && mergeSyncResult.updated > 0) {
+      if (mergeSyncResult.attempted && (mergeSyncResult.updated > 0 || mergeSyncResult.skipped > 0)) {
         print(
-          `Merge sync complete: checked=${mergeSyncResult.checked} updated=${mergeSyncResult.updated}`,
+          `Merge sync complete: checked=${mergeSyncResult.checked} updated=${mergeSyncResult.updated} skipped=${mergeSyncResult.skipped}`,
           colors.dim,
         );
       }
@@ -1750,6 +1957,7 @@ async function runPollingLoop(config) {
         lastPollAt: pollStartedAt,
         lastError: null,
         running: true,
+        baselineReady: true,
         databaseId: config.databaseId,
         dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
@@ -1792,6 +2000,7 @@ async function runPollingLoop(config) {
         lastPollAt: pollStartedAt,
         lastError,
         running: true,
+        baselineReady: true,
         databaseId: config.databaseId,
         dataSourceId: config.dataSourceId || null,
         triggerStatus: config.triggerStatus,
@@ -1810,6 +2019,7 @@ async function runPollingLoop(config) {
     lastPollAt: new Date().toISOString(),
     lastError: null,
     running: false,
+    baselineReady: true,
     databaseId: config.databaseId,
     dataSourceId: config.dataSourceId || null,
     triggerStatus: config.triggerStatus,
@@ -1879,7 +2089,7 @@ async function main(argv = process.argv) {
     print(
       `merge->notion sync: enabled target='${config.gitlabMergedNotionStatus}' target-branch='${config.gitlabTargetBranch}' interval=${Math.round(
         config.gitlabSyncIntervalMs / 1000,
-      )}s`,
+      )}s (one-shot, never regresses status)`,
       colors.dim,
     );
     if (!config.gitlabToken || !config.gitlabProjectRef) {

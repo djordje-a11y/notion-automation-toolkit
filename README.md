@@ -30,6 +30,7 @@ There is no separate `.env` file. All workspace config lives in `.notion.local` 
   - existing ticket branch is reused (not reset from base)
   - handoff is rewritten with latest Notion comment only
 - Poll-based trigger flow (no tunnel/webhook setup needed)
+- Sprint/backlog hygiene on intake: assign current Sprint + cascade to Sub-items
 - Local-only files ignored through `.git/info/exclude` (no product repo pollution)
 
 ## Quick Start
@@ -208,7 +209,8 @@ This performs the full end-of-task handoff in one command:
 1. verifies clean working tree (fails if uncommitted changes)
 2. pushes current branch (`git push -u origin HEAD` when remote branch does not exist)
 3. creates (or reuses) GitLab MR targeting `dev`
-4. enables GitLab auto-merge (merge when pipeline succeeds)
+4. writes an MR description with ticket context, how the branch solves it, and the Notion ticket link
+5. enables GitLab auto-merge (merge when pipeline succeeds)
 
 Auto-merge is **enabled by default**. If auto-merge fails (e.g. merge conflicts with `dev`), it warns but does not block — push and MR creation still succeed.
 
@@ -252,7 +254,8 @@ This command:
 2. commits them (skips the commit if the worktree is already clean)
 3. pushes the current branch
 4. creates or reuses an MR targeting `dev`
-5. assigns the configured reviewers
+5. writes an MR description with ticket context, how the branch solves it, and the Notion ticket link
+6. assigns the configured reviewers
 
 Configure the target repo's `.notion.local`:
 
@@ -266,21 +269,28 @@ GITLAB_REVIEWER_IDS="12345,67890"
 
 Reviewer IDs are numeric GitLab user IDs. Find your ID under GitLab **Preferences → Account**, or obtain project member IDs through GitLab's project members page/API.
 
-If `--message` and `NOTION_PUSH_COMMIT_MESSAGE` are both omitted, the command derives a message from the current branch name. Use `--dry-run true` to preview without committing, pushing, or creating the MR.
+If `--message` and `NOTION_PUSH_COMMIT_MESSAGE` are both omitted, the command derives a message from the current branch name. Use `--dry-run true` to preview without committing, pushing, or creating the MR. `--mr-title` and `--mr-description` override the ticket-aware defaults.
 
 ## Merge To Notion Status Sync
 
-When bridge is running, merged MRs can automatically move the linked Notion ticket to `Fix Deployed Dev`:
+When enabled, the bridge can move a linked Notion ticket to `Fix Deployed Dev` after its tracked MR merges:
 
-- bridge reads tracked ticket branches from `.notion/worktree-map.json`
+- reads tracked ticket branches from `.notion/worktree-map.json`
 - checks GitLab for merged MRs to target branch (`dev` by default)
 - updates ticket status in Notion using `NOTION_STATUS_PROPERTY`
 
+Safety rules (important):
+
+- **Off by default** (`GITLAB_STATUS_SYNC_ON_MERGE=false`)
+- **One-shot**: after a ticket is synced or skipped, it is marked `mergeSyncCompleted` in the worktree map and never rewritten on later bridge restarts
+- **Never regresses**: will not overwrite statuses at/after the merge target (e.g. `Fix Confirmed Dev`, `Fix Confirmed Accept`, `Done`)
+
 Optional env:
 
-- `GITLAB_STATUS_SYNC_ON_MERGE` (default: `true`)
+- `GITLAB_STATUS_SYNC_ON_MERGE` (default: `false`)
 - `GITLAB_MERGED_NOTION_STATUS` (default: `Fix Deployed Dev`)
 - `GITLAB_SYNC_INTERVAL_SECONDS` (default: `30`)
+- `GITLAB_MERGE_SYNC_STATUS_ORDER` (pipe-separated earliest→latest ladder used to block regressions)
 
 ## Generated Files
 
@@ -296,6 +306,8 @@ Per workspace, the toolkit writes:
 - `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)
 
 When the polling bridge starts, it records the current status of every ticket in `.notion/bridge-state.json`. Intake runs only when a later poll observes a ticket move from another status into `NOTION_TRIGGER_STATUS`. Editing an already-triggered ticket, changing its assignee, or changing an unrelated property does not create another handoff or worktree.
+
+On each intake, if Sprint is empty, the toolkit assigns the current sprint (`NOTION_CURRENT_SPRINT` or ISO-week auto-detect) and cascades that value to Sub-item pages so started work leaves the backlog.
 
 When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Fix Deployed Dev`).
 

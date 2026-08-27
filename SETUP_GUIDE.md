@@ -221,6 +221,8 @@ Edit `/path/to/your/repo/.notion.local`.
 | `NOTION_SINGLE_TICKET_MODE` | `true` | Set `false` for parallel ticket intake |
 | `NOTION_AGENT_WORKTREE_MODE` | `false` | Set `true` for one git worktree per ticket |
 | `NOTION_AGENT_MODEL` | `composer-2.5` | Cheap model for script-driven `cursor-agent` calls (see § Model selection below) |
+| `NOTION_SPRINT_ASSIGN_ON_INTAKE` | `true` | Set `false` to disable backlog→sprint auto-assign |
+| `NOTION_CURRENT_SPRINT` | _(auto)_ | Override current sprint option text (e.g. `Sprint Week 33+34`) |
 
 ### Multi-data-source keys (when needed)
 
@@ -281,6 +283,16 @@ NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
 ```
 
 If this file is missing, intake falls back to built-in default rules (less team-specific).
+
+### Sprint / backlog automation
+
+Development Board backlog views show tickets where **Sprint is empty**. When intake runs (status moves to `NOTION_TRIGGER_STATUS`), the toolkit:
+
+1. Resolves the current sprint (`NOTION_CURRENT_SPRINT`, or auto-detect by ISO week against Sprint options like `Sprint Week 33+34`)
+2. Sets **Sprint** on the triggered page when that property is empty
+3. Cascades the same Sprint to related **Sub-item** pages that are still empty (sub-tasks stay in backlog if only the parent is assigned)
+
+Disable with `NOTION_SPRINT_ASSIGN_ON_INTAKE=false`. Property names default to `Sprint` / `Sub-item`.
 
 ---
 
@@ -373,7 +385,8 @@ From inside the ticket branch/worktree. This:
 1. Verifies clean working tree
 2. Pushes branch
 3. Creates or reuses GitLab MR
-4. Enables auto-merge (default)
+4. Fills the MR description from the Notion ticket (problem/feature), commit messages (how it is solved), and the ticket URL
+5. Enables auto-merge (default)
 
 Requires `GITLAB_TOKEN` in `.notion.local`. See `README.md` § Task Done Flow for token setup.
 
@@ -397,7 +410,7 @@ If status property is not `Status`:
 notion-auto done --status-property "<your-status-property-name>"
 ```
 
-When bridge is running, merged MRs can auto-update Notion status to `Fix Deployed Dev` (configurable).
+When bridge is running and `GITLAB_STATUS_SYNC_ON_MERGE=true`, merged MRs can auto-update Notion status to `Fix Deployed Dev` (configurable). This is **off by default**, one-shot per ticket, and will not regress statuses past the merge target (e.g. Fix Confirmed Accept).
 
 ---
 
@@ -442,9 +455,23 @@ See `README.md` § Multi-Ticket Worktree Switching for full options.
 - Run `npm link` from toolkit directory
 - Ensure `~/.local/bin` is on `PATH`
 
+### `Bridge did not report ready state in time`
+
+The launcher waits for the polling bridge to finish its first-run status snapshot. Large ticket databases paginate slowly and used to exceed a 15s wait.
+
+- Restart `notion-auto start --workspace <path>` after updating the toolkit (ready wait is now 180s).
+- Do not change ticket status until the launcher prints `Automation is ready`.
+- If you already flipped status during a failed start, change it away from the trigger status and back again after the bridge is ready.
+
 ### Check passes but bridge never picks tickets
 
 1. **Status text** — `NOTION_TRIGGER_STATUS` must match Notion option exactly (including spaces and capitalization).
+
+**Ticket still in backlog after intake**
+
+1. Confirm the page has a `Sprint` property (or set `NOTION_SPRINT_PROPERTY`).
+2. Set `NOTION_CURRENT_SPRINT` to the exact option text if ISO-week auto-detect is wrong.
+3. For sub-tasks: confirm the parent’s `Sub-item` relation lists them; cascade only updates empty Sprint values.
 2. **Assignee filter** — ticket assignee UUID must be in `NOTION_ASSIGNEE_IDS`.
 3. **Property names** — `NOTION_STATUS_PROPERTY` and `NOTION_ASSIGNEE_PROPERTY` must match database column names exactly.
 4. **Bridge running?** — `notion-auto start` must stay alive; check `.notion/runtime.json` and bridge logs.

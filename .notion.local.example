@@ -72,6 +72,17 @@ NOTION_AGENT_SECTION_PROPERTY="Type"
 NOTION_AGENT_DOWNLOAD_ATTACHMENTS="true"
 NOTION_AGENT_ATTACHMENTS_MAX="20"
 
+# --- Sprint / backlog (Development Board) ---
+# On intake, assign current Sprint when empty so the ticket leaves backlog.
+# Also cascades the same Sprint to Sub-item pages (they stay in backlog otherwise).
+NOTION_SPRINT_ASSIGN_ON_INTAKE="true"
+NOTION_SPRINT_PROPERTY="Sprint"
+NOTION_SUBITEM_PROPERTY="Sub-item"
+NOTION_SPRINT_CASCADE_SUBITEMS="true"
+# Optional override. If unset, auto-detect from Sprint options using ISO week
+# (e.g. "Sprint Week 33+34" when current week is 33 or 34).
+# NOTION_CURRENT_SPRINT="Sprint Week 33+34"
+
 # --- Multi-ticket worktree mode (optional) ---
 
 NOTION_AGENT_WORKTREE_MODE="false"
@@ -115,9 +126,14 @@ NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
 # Used by notion-auto done only:
 # GITLAB_AUTO_MERGE="true"
 # GITLAB_API_URL="https://gitlab.com/api/v4"
-# GITLAB_STATUS_SYNC_ON_MERGE="true"
+# Merge->Notion status sync is OFF by default. Enable only if you want automatic
+# "Fix Deployed Dev" after MR merge. Sync is one-shot and never moves a ticket
+# backward (e.g. will not overwrite Fix Confirmed Accept / Prod).
+# GITLAB_STATUS_SYNC_ON_MERGE="false"
 # GITLAB_MERGED_NOTION_STATUS="Fix Deployed Dev"
 # GITLAB_SYNC_INTERVAL_SECONDS="30"
+# Optional pipe-separated status ladder (earliest -> latest) used to block regressions:
+# GITLAB_MERGE_SYNC_STATUS_ORDER="Not Started|In progress|Pending Deployment Dev|Fix Deployed Dev|Fix Confirmed Dev|Pending Deployment Accept|Fix Deployed Accept|Fix Confirmed Accept|Done"
 
 # --- Optional: agent runtime ---
 

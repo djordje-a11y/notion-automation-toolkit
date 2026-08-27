@@ -6,6 +6,7 @@
  * - verifies git state
  * - pushes current branch (git push -u origin HEAD when branch has no remote)
  * - opens GitLab MR toward target branch (default: dev)
+ * - fills MR description with ticket context, solution (commits), and Notion link
  * - enables GitLab auto-merge (merge when pipeline succeeds)
  */
 
@@ -13,6 +14,7 @@ import process from 'process';
 import path from 'path';
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
+import { buildTicketAwareMrDescription } from './notion-mr-description.js';
 
 const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_TARGET_BRANCH = 'dev';
@@ -310,22 +312,29 @@ async function gitlabRequest(config, endpointPath, { method = 'GET', body = null
   return payload || {};
 }
 
-function buildDefaultMrTitle(branchName, targetBranch) {
-  return `${branchName} -> ${targetBranch}`;
+async function resolveMrCopy(config, currentBranch) {
+  return buildTicketAwareMrDescription({
+    workspace: config.workspace,
+    rootWorkspace: config.rootWorkspace,
+    branch: currentBranch,
+    remote: config.remote,
+    targetBranch: config.targetBranch,
+    runGit,
+  });
 }
 
-async function buildDefaultMrDescription(config, currentBranch) {
-  try {
-    const logOutput = await runGit(
-      ['log', `${config.remote}/${config.targetBranch}..HEAD`, '--pretty=format:- %s'],
-      config.workspace,
-    );
-    const lines = String(logOutput || '').trim();
-    if (lines) return `## Commits\n\n${lines}`;
-  } catch {
-    // fall through
+function printMrDescriptionPreview(description, { dryRun = false } = {}) {
+  const label = dryRun ? '[dry-run] MR description:' : 'MR description:';
+  const color = dryRun ? colors.yellow : colors.dim;
+  const text = String(description || '').trim();
+  if (!text) {
+    print(`${label} (empty)`, colors.dim);
+    return;
   }
-  return '';
+  print(label, color);
+  for (const line of text.split(/\r?\n/)) {
+    print(`  ${line}`, colors.dim);
+  }
 }
 
 const AUTO_MERGE_MAX_RETRIES = 4;
@@ -523,14 +532,18 @@ async function main(argv = process.argv) {
       );
     }
 
-    const title = config.mrTitle || buildDefaultMrTitle(currentBranch, config.targetBranch);
-    const description = config.mrDescription || await buildDefaultMrDescription(config, currentBranch);
+    const generated = config.mrTitle && config.mrDescription
+      ? null
+      : await resolveMrCopy(config, currentBranch);
+    const title = config.mrTitle || generated?.title || `${currentBranch} -> ${config.targetBranch}`;
+    const description = config.mrDescription || generated?.description || '';
 
     if (config.dryRun) {
       print(
         `[dry-run] MR create: source=${currentBranch} target=${config.targetBranch} title="${title}"`,
         colors.yellow,
       );
+      if (!config.mrDescription) printMrDescriptionPreview(description, { dryRun: true });
       if (config.autoMerge) {
         print('[dry-run] MR auto-merge: enable when pipeline succeeds', colors.yellow);
       } else {

@@ -6,6 +6,7 @@
  * - commits all uncommitted changes
  * - pushes the current branch
  * - creates or reuses a GitLab MR toward dev
+ * - fills MR description with ticket context, solution (commits), and Notion link
  * - assigns configured GitLab reviewers
  */
 
@@ -13,6 +14,7 @@ import process from 'process';
 import path from 'path';
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
+import { buildTicketAwareMrDescription } from './notion-mr-description.js';
 
 const DEFAULT_GIT_REMOTE = 'origin';
 const DEFAULT_TARGET_BRANCH = 'dev';
@@ -252,15 +254,29 @@ function defaultCommitMessage(branch) {
   return `Update ${branch.replace(/[\/_-]+/g, ' ').trim()}`;
 }
 
-async function buildMrDescription(config) {
-  try {
-    const commits = await runGit(
-      ['log', `${config.remote}/${config.targetBranch}..HEAD`, '--pretty=format:- %s'],
-      config.workspace,
-    );
-    return commits ? `## Commits\n\n${commits}` : '';
-  } catch {
-    return '';
+async function resolveMrCopy(config, branch, pendingCommitMessage = '') {
+  return buildTicketAwareMrDescription({
+    workspace: config.workspace,
+    rootWorkspace: config.rootWorkspace,
+    branch,
+    remote: config.remote,
+    targetBranch: config.targetBranch,
+    runGit,
+    pendingCommitMessage,
+  });
+}
+
+function printMrDescriptionPreview(description, { dryRun = false } = {}) {
+  const label = dryRun ? '[dry-run] MR description:' : 'MR description:';
+  const color = dryRun ? colors.yellow : colors.dim;
+  const text = String(description || '').trim();
+  if (!text) {
+    print(`${label} (empty)`, colors.dim);
+    return;
+  }
+  print(label, color);
+  for (const line of text.split(/\r?\n/)) {
+    print(`  ${line}`, colors.dim);
   }
 }
 
@@ -304,6 +320,7 @@ async function main(argv = process.argv) {
   const loadedEnv = await loadLocalEnv(args, process.cwd(), rootWorkspace);
   const config = {
     workspace: process.cwd(),
+    rootWorkspace,
     envSource: loadedEnv.source,
     remote: getOptionalArg(
       args,
@@ -378,16 +395,27 @@ async function main(argv = process.argv) {
       hasChanges ? colors.yellow : colors.dim,
     );
     print(`[dry-run] push: git push -u ${config.remote} HEAD`, colors.yellow);
-    print(
-      `[dry-run] MR: ${branch} -> ${config.targetBranch}; reviewers=${config.reviewerIds.join(',')}`,
-      colors.yellow,
-    );
   } else {
     if (hasChanges) {
       await runGit(['add', '-A'], config.workspace);
       await runGit(['commit', '-m', commitMessage], config.workspace);
     }
     await runGit(['push', '-u', config.remote, 'HEAD'], config.workspace);
+  }
+
+  const generated =
+    config.mrTitle && config.mrDescription
+      ? null
+      : await resolveMrCopy(config, branch, config.dryRun && hasChanges ? commitMessage : '');
+  const title = config.mrTitle || generated?.title || `${branch} -> ${config.targetBranch}`;
+  const description = config.mrDescription || generated?.description || '';
+
+  if (config.dryRun) {
+    print(
+      `[dry-run] MR: ${title}; reviewers=${config.reviewerIds.join(',')}`,
+      colors.yellow,
+    );
+    if (!config.mrDescription) printMrDescriptionPreview(description, { dryRun: true });
   }
 
   let mrUrl = '';
@@ -413,8 +441,6 @@ async function main(argv = process.argv) {
       mrUrl = String(updated.web_url || mrUrl).trim();
       mrCreated = false;
     } else {
-      const title = config.mrTitle || `${branch} -> ${config.targetBranch}`;
-      const description = config.mrDescription || (await buildMrDescription(config));
       const created = await gitlabRequest(config, `/projects/${projectRef}/merge_requests`, {
         method: 'POST',
         body: {

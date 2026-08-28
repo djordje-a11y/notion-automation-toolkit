@@ -19,6 +19,8 @@
     "notion:tickets": "node ./bin/notion-auto.js tickets",
     "notion:done": "node ./bin/notion-auto.js done",
     "notion:push": "node ./bin/notion-auto.js push",
+    "notion:review": "node ./bin/notion-auto.js review",
+    "notion:review-comment": "node ./bin/notion-auto.js review-comment",
     "notion:mcp-handoff": "bash ./scripts/notion-mcp-handoff.sh"
   }
 }

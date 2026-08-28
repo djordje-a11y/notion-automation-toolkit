@@ -117,6 +117,8 @@ notion-auto tickets      --checkout
 notion-auto tickets      --paths true
 notion-auto done
 notion-auto push         --message "Implement ticket changes"
+notion-auto review       --mr-iid 42
+notion-auto review-comment --mr-iid 42 --body "Consider X instead of Y"
 ```
 
 Always run/start/stop via `notion-auto` when validating toolkit behavior.
@@ -271,6 +273,36 @@ Reviewer IDs are numeric GitLab user IDs. Find your ID under GitLab **Preference
 
 If `--message` and `NOTION_PUSH_COMMIT_MESSAGE` are both omitted, the command derives a message from the current branch name. Use `--dry-run true` to preview without committing, pushing, or creating the MR. `--mr-title` and `--mr-description` override the ticket-aware defaults.
 
+## GitLab Review Handoff
+
+When someone assigns you as a reviewer, the toolkit can write a review handoff the same way intake writes `@notion-handoff.md`. Comments are **never** posted automatically.
+
+Enable in the target repo `.notion.local`:
+
+```bash
+GITLAB_REVIEW_ON_ASSIGN="true"
+```
+
+Then keep `notion-auto start` running. The first poll baselines MRs already assigned to you. A later new assignment writes:
+
+- `notion-review-<iid>.md` (attach this in a **new** Cursor chat)
+- `notion-review.md` (stable alias for the latest review)
+- `.notion/reviews/<iid>-<slug>.review.md`
+
+In the new chat, attach `@notion-review-<iid>.md`. The agent should explain the problem, what the MR changed, and what to watch, then wait for your questions. After you agree a comment is needed:
+
+```bash
+notion-auto review-comment --mr-iid 42 --body "Consider handling the empty list before mapping."
+# optional inline:
+# notion-auto review-comment --mr-iid 42 --path src/file.ts --line 18 --body "..."
+```
+
+Manual (no waiting for assign):
+
+```bash
+notion-auto review --mr-iid 42
+```
+
 ## Merge To Notion Status Sync
 
 When enabled, the bridge can move a linked Notion ticket to `Fix Deployed Dev` after its tracked MR merges:
@@ -301,6 +333,8 @@ Per workspace, the toolkit writes:
 - `.notion/intake/assets/<page-id>/*` (downloaded ticket attachments when enabled)
 - `.notion/handoffs/<branch-flat>.agent-handoff.md`
 - `notion-handoff.md` (stable alias that always points to the latest handoff)
+- `notion-review-<iid>.md` and `notion-review.md` (review handoffs when assigned on GitLab)
+- `.notion/reviews/<iid>-<slug>.review.md`
 - `.notion/runtime.json`
 - `.notion/bridge-state.json`
 - `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)

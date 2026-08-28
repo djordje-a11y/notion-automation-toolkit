@@ -74,6 +74,9 @@ const DEFAULT_GITLAB_TARGET_BRANCH = 'dev';
 const DEFAULT_GITLAB_REMOTE = 'origin';
 const DEFAULT_GITLAB_MERGED_STATUS = 'Fix Deployed Dev';
 const DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS = 30;
+const DEFAULT_GITLAB_REVIEW_ON_ASSIGN = false;
+const DEFAULT_GITLAB_REVIEW_SKIP_OWN = true;
+const DEFAULT_REVIEW_STATE_FILE = '.notion/review-state.json';
 // Ordered earliest -> latest. Merge sync only moves tickets forward to the merged status.
 const DEFAULT_GITLAB_MERGE_SYNC_STATUS_ORDER = [
   'Not Started',
@@ -115,7 +118,9 @@ let dispatchInFlight = false;
 let dispatchActivePageId = '';
 let dispatchStartedAt = '';
 let lastGitlabMergeSyncAtMs = 0;
+let lastGitlabReviewSyncAtMs = 0;
 let gitlabSyncConfigWarningPrinted = false;
+let gitlabReviewConfigWarningPrinted = false;
 let stopping = false;
 
 function print(message, color = '') {
@@ -289,6 +294,9 @@ async function loadNotionEnvValues(args) {
     'GITLAB_STATUS_SYNC_ON_MERGE',
     'GITLAB_MERGED_NOTION_STATUS',
     'GITLAB_SYNC_INTERVAL_SECONDS',
+    'GITLAB_REVIEW_ON_ASSIGN',
+    'GITLAB_REVIEW_USER_ID',
+    'GITLAB_REVIEW_SKIP_OWN',
     'NOTION_ENV_FILE',
   ];
 
@@ -624,6 +632,34 @@ function buildRuntimeConfig(args, envValues) {
           DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS,
         ),
       ) * 1000,
+    gitlabReviewOnAssign: parseBoolean(
+      getOptionalArg(
+        args,
+        'gitlab-review-on-assign',
+        process.env.GITLAB_REVIEW_ON_ASSIGN ||
+          envValues.GITLAB_REVIEW_ON_ASSIGN ||
+          String(DEFAULT_GITLAB_REVIEW_ON_ASSIGN),
+      ),
+      DEFAULT_GITLAB_REVIEW_ON_ASSIGN,
+    ),
+    gitlabReviewUserId: String(
+      process.env.GITLAB_REVIEW_USER_ID || envValues.GITLAB_REVIEW_USER_ID || '',
+    ).trim(),
+    gitlabReviewSkipOwn: parseBoolean(
+      getOptionalArg(
+        args,
+        'gitlab-review-skip-own',
+        process.env.GITLAB_REVIEW_SKIP_OWN ||
+          envValues.GITLAB_REVIEW_SKIP_OWN ||
+          String(DEFAULT_GITLAB_REVIEW_SKIP_OWN),
+      ),
+      DEFAULT_GITLAB_REVIEW_SKIP_OWN,
+    ),
+    gitlabReviewStateFile: resolvePathFromWorkspace(
+      rootWorkspace,
+      DEFAULT_REVIEW_STATE_FILE,
+      DEFAULT_REVIEW_STATE_FILE,
+    ),
   };
 }
 
@@ -1284,6 +1320,140 @@ async function syncMergedMergeRequestsToNotion(config) {
   return { attempted: true, checked, updated, skipped };
 }
 
+async function resolveGitlabReviewerUserId(config) {
+  const explicit = Number(config.gitlabReviewUserId || 0);
+  if (Number.isSafeInteger(explicit) && explicit > 0) return explicit;
+  const me = await gitlabRequest(config, '/user', { method: 'GET' });
+  return Number(me?.id || 0) || 0;
+}
+
+async function writeReviewHandoffForMr(config, mrIid) {
+  const script = path.resolve(TOOLKIT_ROOT, 'scripts/notion-mr-review.js');
+  const result = await runCommandCapture(
+    'node',
+    [script, '--workspace', config.rootWorkspace, '--mr-iid', String(mrIid)],
+    { cwd: config.rootWorkspace, env: process.env },
+  );
+  const stdout = String(result.stdout || '').trim();
+  const stderr = String(result.stderr || '').trim();
+  if (stdout) print(stdout, colors.dim);
+  if (result.code !== 0) {
+    fail(stderr || stdout || `review handoff failed for MR !${mrIid}`);
+  }
+}
+
+async function syncAssignedMergeRequestReviews(config) {
+  if (!config.gitlabReviewOnAssign) {
+    return { attempted: false, checked: 0, written: 0, skipped: 0 };
+  }
+  const now = Date.now();
+  if (now - lastGitlabReviewSyncAtMs < config.gitlabSyncIntervalMs) {
+    return { attempted: false, checked: 0, written: 0, skipped: 0 };
+  }
+  lastGitlabReviewSyncAtMs = now;
+
+  if (!config.gitlabToken || !config.gitlabProjectRef) {
+    if (!gitlabReviewConfigWarningPrinted) {
+      print(
+        'GitLab review handoff disabled: configure GITLAB_TOKEN and GITLAB_PROJECT_ID (or resolvable git remote).',
+        colors.dim,
+      );
+      gitlabReviewConfigWarningPrinted = true;
+    }
+    return { attempted: false, checked: 0, written: 0, skipped: 0 };
+  }
+
+  const userId = await resolveGitlabReviewerUserId(config);
+  if (!userId) {
+    print('GitLab review handoff skipped: could not resolve current GitLab user id.', colors.yellow);
+    return { attempted: true, checked: 0, written: 0, skipped: 0 };
+  }
+
+  const assigned = await gitlabRequest(
+    config,
+    `/projects/${config.gitlabProjectRef}/merge_requests?state=opened&reviewer_id=${encodeURIComponent(
+      String(userId),
+    )}&per_page=50&order_by=updated_at&sort=desc`,
+    { method: 'GET' },
+  );
+  const mrs = Array.isArray(assigned) ? assigned : [];
+  const state = await readJsonFileSafe(config.gitlabReviewStateFile, {
+    baselineReady: false,
+    knownMrIids: [],
+    handoffs: {},
+  });
+  const known = new Set((state.knownMrIids || []).map((value) => String(value)));
+
+  if (!state.baselineReady) {
+    for (const mr of mrs) {
+      const iid = String(mr?.iid || '').trim();
+      if (iid) known.add(iid);
+    }
+    await writeJsonFile(config.gitlabReviewStateFile, {
+      ...state,
+      baselineReady: true,
+      userId,
+      knownMrIids: [...known],
+      updatedAt: new Date().toISOString(),
+    });
+    print(
+      `Review baseline captured for ${known.size} assigned MR(s); only new reviewer assignments will write a handoff.`,
+      colors.dim,
+    );
+    return { attempted: true, checked: mrs.length, written: 0, skipped: mrs.length };
+  }
+
+  let written = 0;
+  let skipped = 0;
+  let checked = 0;
+  for (const mr of mrs) {
+    const iid = String(mr?.iid || '').trim();
+    if (!iid) continue;
+    checked += 1;
+    if (known.has(iid)) {
+      skipped += 1;
+      continue;
+    }
+    if (mr?.draft || mr?.work_in_progress) {
+      skipped += 1;
+      continue;
+    }
+    if (config.gitlabReviewSkipOwn && Number(mr?.author?.id) === Number(userId)) {
+      known.add(iid);
+      skipped += 1;
+      continue;
+    }
+
+    known.add(iid);
+    await writeJsonFile(config.gitlabReviewStateFile, {
+      ...state,
+      baselineReady: true,
+      userId,
+      knownMrIids: [...known],
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (config.dryRun) {
+      print(`[dry-run] review handoff: MR !${iid} ${String(mr?.title || '').trim()}`, colors.yellow);
+      written += 1;
+      continue;
+    }
+
+    try {
+      await writeReviewHandoffForMr(config, iid);
+      written += 1;
+      print(
+        `Review handoff ready for MR !${iid}: attach @notion-review-${iid}.md in a new Cursor chat.`,
+        colors.green,
+      );
+    } catch (error) {
+      print(`Review handoff warning for MR !${iid}: ${error?.message || String(error)}`, colors.yellow);
+    }
+  }
+
+  return { attempted: true, checked, written, skipped };
+}
+
 async function writeActiveTicketsIndex(config, ticketsMap) {
   const tickets = ticketsMap && typeof ticketsMap === 'object' ? ticketsMap : {};
   const rows = Object.values(tickets)
@@ -1759,6 +1929,7 @@ function printUsage() {
   print('  --worktree-auto-remove-on-cleanup true|false');
   print('  --gitlab-status-sync-on-merge true|false');
   print('  --gitlab-sync-interval-seconds 30');
+  print('  --gitlab-review-on-assign true|false');
   print('  --dry-run true|false');
   print('');
 }
@@ -1949,6 +2120,14 @@ async function runPollingLoop(config) {
         );
       }
 
+      const reviewSyncResult = await syncAssignedMergeRequestReviews(config);
+      if (reviewSyncResult.attempted && reviewSyncResult.written > 0) {
+        print(
+          `Review assign sync: checked=${reviewSyncResult.checked} written=${reviewSyncResult.written} skipped=${reviewSyncResult.skipped}`,
+          colors.dim,
+        );
+      }
+
       cursorIso = nextCursorIso;
       await writeStateFile(config.stateFile, {
         startedAt,
@@ -2100,6 +2279,22 @@ async function main(argv = process.argv) {
     }
   } else {
     print('merge->notion sync: disabled', colors.dim);
+  }
+  if (config.gitlabReviewOnAssign) {
+    print(
+      `review-on-assign: enabled (writes @notion-review-<iid>.md; no auto comments) interval=${Math.round(
+        config.gitlabSyncIntervalMs / 1000,
+      )}s`,
+      colors.dim,
+    );
+    if (!config.gitlabToken || !config.gitlabProjectRef) {
+      print(
+        'review-on-assign prerequisites missing: set GITLAB_TOKEN and GITLAB_PROJECT_ID (or make GITLAB_REMOTE resolvable).',
+        colors.yellow,
+      );
+    }
+  } else {
+    print('review-on-assign: disabled', colors.dim);
   }
   print(`state file: ${config.stateFile}`, colors.dim);
   print(`mode: ${config.dryRun ? 'DRY-RUN' : 'APPLY'}`, config.dryRun ? colors.yellow : colors.green);

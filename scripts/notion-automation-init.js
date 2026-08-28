@@ -20,7 +20,13 @@ const colors = {
   dim: '\x1b[2m',
 };
 
-const REQUIRED_EXCLUDES = ['.notion/', '.notion.local', 'notion-handoff.md'];
+const REQUIRED_EXCLUDES = [
+  '.notion/',
+  '.notion.local',
+  'notion-handoff.md',
+  'notion-review.md',
+  'notion-review-*.md',
+];
 
 function print(message, color = '') {
   // eslint-disable-next-line no-console
@@ -136,6 +142,7 @@ async function main(argv = process.argv) {
 
   await fs.mkdir(path.resolve(workspace, '.notion', 'handoffs'), { recursive: true });
   await fs.mkdir(path.resolve(workspace, '.notion', 'intake'), { recursive: true });
+  await fs.mkdir(path.resolve(workspace, '.notion', 'reviews'), { recursive: true });
 
   const existing = await readTextIfExists(excludeAbsolute);
   const lines = existing
@@ -155,7 +162,7 @@ async function main(argv = process.argv) {
     print(`${excludeAbsolute} already contains required ignore entries.`, colors.dim);
   }
 
-  print('Ensured local directories: .notion/handoffs and .notion/intake', colors.green);
+  print('Ensured local directories: .notion/handoffs, .notion/intake, and .notion/reviews', colors.green);
   print('notion automation init complete.', colors.green);
   return 0;
 }

@@ -77,7 +77,7 @@ notion-auto check --workspace /path/to/target-repo
 notion-auto start --workspace /path/to/target-repo
 ```
 
-Do **not** commit `.notion.local`, `.notion/`, or `notion-handoff.md` to git. `notion-auto init` adds local-only ignores.
+Do **not** commit `.notion.local`, `.notion/`, `notion-handoff.md`, or `notion-review*.md` to git. `notion-auto init` adds local-only ignores.
 
 ---
 
@@ -216,6 +216,18 @@ GITLAB_REVIEWER_IDS="12345,67890"
 ```
 
 Then use `notion-auto push --message "Implement ticket changes"` instead. It commits all current changes, pushes, creates or reuses the MR, assigns the reviewers, and writes the same ticket-aware MR description without enabling auto-merge.
+
+To get a review handoff when someone assigns you on GitLab (same `@file` flow as tickets, no auto-comments):
+
+```bash
+GITLAB_REVIEW_ON_ASSIGN="true"
+```
+
+Open a new Cursor chat and attach `@notion-review-<iid>.md`. Discuss first. Post only when the user asks:
+
+```bash
+notion-auto review-comment --mr-iid <id> --body "<comment>"
+```
 
 ---
 

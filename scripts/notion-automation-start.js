@@ -55,7 +55,13 @@ const DEFAULT_RUNTIME_FILE = '.notion/runtime.json';
 const DEFAULT_STATE_FILE = '.notion/bridge-state.json';
 const DEFAULT_BRIDGE_READY_TIMEOUT_MS = 180000;
 const DEFAULT_REQUIRE_LOCAL_IGNORES = true;
-const REQUIRED_LOCAL_IGNORE_ENTRIES = ['.notion/', '.notion.local', 'notion-handoff.md'];
+const REQUIRED_LOCAL_IGNORE_ENTRIES = [
+  '.notion/',
+  '.notion.local',
+  'notion-handoff.md',
+  'notion-review.md',
+  'notion-review-*.md',
+];
 
 const colors = {
   reset: '\x1b[0m',

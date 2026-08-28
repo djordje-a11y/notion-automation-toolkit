@@ -134,6 +134,16 @@ NOTION_AGENT_RULES_FILE=".notion/agent-rules.md"
 # GITLAB_SYNC_INTERVAL_SECONDS="30"
 # Optional pipe-separated status ladder (earliest -> latest) used to block regressions:
 # GITLAB_MERGE_SYNC_STATUS_ORDER="Not Started|In progress|Pending Deployment Dev|Fix Deployed Dev|Fix Confirmed Dev|Pending Deployment Accept|Fix Deployed Accept|Fix Confirmed Accept|Done"
+#
+# Human-in-the-loop code review when you are assigned as a GitLab reviewer.
+# Off by default. When enabled, the bridge writes @notion-review-<iid>.md and
+# does NOT post comments. Open a new Cursor chat, attach that file, discuss,
+# then post only if needed:
+#   notion-auto review-comment --mr-iid <id> --body "..."
+# GITLAB_REVIEW_ON_ASSIGN="false"
+# GITLAB_REVIEW_SKIP_OWN="true"
+# Optional if /user lookup is wrong:
+# GITLAB_REVIEW_USER_ID="12345"
 
 # --- Optional: agent runtime ---
 

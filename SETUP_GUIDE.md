@@ -240,6 +240,7 @@ Edit `/path/to/your/repo/.notion.local`.
 | `GITLAB_REVIEWER_IDS` | Reviewer IDs required by `notion-auto push` |
 | `GITLAB_PROJECT_ID` | Auto-inferred from git remote if omitted |
 | `GITLAB_AUTO_MERGE` | `notion-auto done` default: `true` |
+| `GITLAB_REVIEW_ON_ASSIGN` | Write `@notion-review-<iid>.md` when you are assigned (default `false`; no auto-comments) |
 
 See `.notion.local.example` for all options with inline comments.
 

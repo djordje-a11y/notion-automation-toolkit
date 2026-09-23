@@ -2,6 +2,7 @@ GitLab MR review rules (human-in-the-loop):
 
 - This file is read-once input for a review chat. Do not edit the review `.md`.
 - Start a new chat for this review. Attach the named `@notion-review-<iid>.md` file.
+- After this review handoff is consumed (read + context built), delete the root alias immediately: `notion-review-<iid>.md` and `notion-review.md` if it points at the same MR. Leave `.notion/reviews/` archives alone. Remaining root `notion-review-*.md` files mean unconsumed reviews.
 - First response must explain, in plain language:
   1. What problem or feature the ticket/MR is about
   2. What the MR actually changed

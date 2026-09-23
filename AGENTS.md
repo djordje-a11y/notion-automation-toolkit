@@ -77,7 +77,7 @@ notion-auto check --workspace /path/to/target-repo
 notion-auto start --workspace /path/to/target-repo
 ```
 
-Do **not** commit `.notion.local`, `.notion/`, `notion-handoff.md`, or `notion-review*.md` to git. `notion-auto init` adds local-only ignores.
+Do **not** commit `.notion.local`, `.notion/`, `notion-handoff.md`, or `notion-review.md` to git. `notion-auto init` adds local-only ignores for those paths. Named aliases (`notion-handoff-<slug>.md`, `notion-review-<iid>.md`) stay unignored so Cursor can `@`-attach them.
 
 ---
 
@@ -191,6 +191,7 @@ Success criteria:
   - `notion-handoff.md` in repo root
   - `.notion/handoffs/<branch>.agent-handoff.md`
 - User can attach `@notion-handoff.md` in Cursor chat.
+- After the agent reads the handoff and builds context, it must delete the root alias (`notion-handoff-<slug>.md` / `notion-handoff.md`). Remaining root handoff files = unconsumed tickets.
 
 Manual intake test (bypasses polling — useful for debugging):
 
@@ -217,16 +218,30 @@ GITLAB_REVIEWER_IDS="12345,67890"
 
 Then use `notion-auto push --message "Implement ticket changes"` instead. It commits all current changes, pushes, creates or reuses the MR, assigns the reviewers, and writes the same ticket-aware MR description without enabling auto-merge.
 
-To get a review handoff when someone assigns you on GitLab (same `@file` flow as tickets, no auto-comments):
+To get a review handoff when someone assigns you on GitLab (same `@file` flow as tickets):
 
 ```bash
 GITLAB_REVIEW_ON_ASSIGN="true"
 ```
 
-Open a new Cursor chat and attach `@notion-review-<iid>.md`. Discuss first. Post only when the user asks:
+Open a new Cursor chat and attach `@notion-review-<iid>.md`. Discuss first. After the agent consumes the handoff (read + context built), it must delete that root alias (and `notion-review.md` if it points at the same MR). Remaining root `notion-review-*.md` files = unconsumed reviews. Post only when the user asks:
 
 ```bash
 notion-auto review-comment --mr-iid <id> --body "<comment>"
+```
+
+To have `cursor-agent` review and post comments when you are assigned:
+
+```bash
+GITLAB_REVIEW_ON_ASSIGN="true"
+GITLAB_REVIEW_AUTO_DISPATCH="true"
+GITLAB_REVIEW_AUTO_PUBLISH="true"
+```
+
+Or run one MR immediately:
+
+```bash
+notion-auto review-run --mr-iid <id>
 ```
 
 ---

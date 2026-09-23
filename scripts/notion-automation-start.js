@@ -60,8 +60,8 @@ const REQUIRED_LOCAL_IGNORE_ENTRIES = [
   '.notion.local',
   'notion-handoff.md',
   'notion-review.md',
-  'notion-review-*.md',
 ];
+const STALE_LOCAL_IGNORE_ENTRIES = ['notion-review-*.md'];
 
 const colors = {
   reset: '\x1b[0m',
@@ -327,6 +327,52 @@ async function evaluateLocalIgnoreCoverage(workspace) {
     missing,
     checkedFiles: [trackedGitignorePath, localExcludePath].filter(Boolean),
   };
+}
+
+async function ensureGeneratedFileIgnores(workspace) {
+  await fs.mkdir(path.resolve(workspace, '.notion', 'handoffs'), { recursive: true });
+  await fs.mkdir(path.resolve(workspace, '.notion', 'intake'), { recursive: true });
+  await fs.mkdir(path.resolve(workspace, '.notion', 'reviews'), { recursive: true });
+
+  let excludeAbsolute = '';
+  try {
+    const gitExcludePath = await runGit(workspace, ['rev-parse', '--git-path', 'info/exclude']);
+    excludeAbsolute = path.isAbsolute(gitExcludePath)
+      ? gitExcludePath
+      : path.resolve(workspace, gitExcludePath);
+  } catch {
+    return { updated: false, missing: [] };
+  }
+
+  const existing = await readTextIfExists(excludeAbsolute);
+  const keptLines = existing
+    .split(/\r?\n/)
+    .filter((line) => !STALE_LOCAL_IGNORE_ENTRIES.includes(line.trim()));
+  while (keptLines.length > 0 && keptLines[keptLines.length - 1] === '') {
+    keptLines.pop();
+  }
+  const present = new Set(keptLines.map((line) => line.trim()).filter(Boolean));
+  const missing = REQUIRED_LOCAL_IGNORE_ENTRIES.filter((entry) => !present.has(entry));
+  const removedStale = STALE_LOCAL_IGNORE_ENTRIES.filter((entry) =>
+    existing.split(/\r?\n/).some((line) => line.trim() === entry),
+  );
+  if (missing.length === 0 && removedStale.length === 0) return { updated: false, missing: [] };
+
+  const nextText = `${[...keptLines, ...missing].join('\n')}${
+    keptLines.length + missing.length > 0 ? '\n' : ''
+  }`;
+  await fs.mkdir(path.dirname(excludeAbsolute), { recursive: true });
+  await fs.writeFile(excludeAbsolute, nextText, 'utf8');
+  if (missing.length > 0) {
+    print(`Added local ignore entries for generated files: ${missing.join(', ')}`, colors.dim);
+  }
+  if (removedStale.length > 0) {
+    print(
+      `Removed stale ignore entries so Cursor can @-attach named review files: ${removedStale.join(', ')}`,
+      colors.dim,
+    );
+  }
+  return { updated: true, missing, removedStale };
 }
 
 function buildRuntimeConfig(args, envValues, envFile) {
@@ -1079,6 +1125,7 @@ async function main(argv = process.argv) {
   const loadedEnv = await loadNotionEnvValues(args);
   const envFile = resolveEnvFileCandidate(getOptionalArg(args, 'env-file')) || loadedEnv.source || '';
   const config = buildRuntimeConfig(args, loadedEnv.values, envFile);
+  await ensureGeneratedFileIgnores(process.cwd());
   config.localIgnoreCheck = await evaluateLocalIgnoreCoverage(process.cwd());
 
   print(`notion token: ${maskSecret(config.token)} (masked)`, colors.dim);

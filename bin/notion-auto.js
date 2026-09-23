@@ -56,6 +56,10 @@ const SCRIPT_MAP = {
     script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-mr-review.js'),
     prependArgs: ['--post-comment'],
   },
+  'review-run': {
+    script: path.resolve(TOOLKIT_ROOT, 'scripts/notion-mr-review.js'),
+    prependArgs: ['--dispatch'],
+  },
 };
 
 function printUsage() {
@@ -82,6 +86,7 @@ function printUsage() {
       '  done    Push current branch and open GitLab MR to target branch',
       '  push    Commit changes, push, open MR to dev, and assign reviewers',
       '  review  Write a GitLab MR review handoff (@notion-review-<iid>.md)',
+      '  review-run  Write the handoff and dispatch cursor-agent for the MR',
       '  review-comment  Post a GitLab MR comment after the review discussion',
       '',
       'Examples:',
@@ -94,6 +99,7 @@ function printUsage() {
       '  na done --target-branch dev',
       '  na push --message "Fix ticket behavior"',
       '  na review --mr-iid 42',
+      '  na review-run --mr-iid 42',
       '  na review-comment --mr-iid 42 --body "Consider X instead of Y"',
       '',
     ].join('\n'),

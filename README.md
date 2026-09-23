@@ -118,6 +118,7 @@ notion-auto tickets      --paths true
 notion-auto done
 notion-auto push         --message "Implement ticket changes"
 notion-auto review       --mr-iid 42
+notion-auto review-run   --mr-iid 42
 notion-auto review-comment --mr-iid 42 --body "Consider X instead of Y"
 ```
 
@@ -275,7 +276,7 @@ If `--message` and `NOTION_PUSH_COMMIT_MESSAGE` are both omitted, the command de
 
 ## GitLab Review Handoff
 
-When someone assigns you as a reviewer, the toolkit can write a review handoff the same way intake writes `@notion-handoff.md`. Comments are **never** posted automatically.
+When someone assigns you as a reviewer, the polling bridge can write a review handoff the same way intake writes `@notion-handoff.md`. Keep `notion-auto start` running. The first poll baselines MRs already assigned to you; later new assignments trigger the flow.
 
 Enable in the target repo `.notion.local`:
 
@@ -283,13 +284,30 @@ Enable in the target repo `.notion.local`:
 GITLAB_REVIEW_ON_ASSIGN="true"
 ```
 
-Then keep `notion-auto start` running. The first poll baselines MRs already assigned to you. A later new assignment writes:
+That writes:
 
-- `notion-review-<iid>.md` (attach this in a **new** Cursor chat)
-- `notion-review.md` (stable alias for the latest review)
+- `notion-review-<iid>.md` (attach this in a **new** Cursor chat; named aliases are not gitignored so Cursor `@` can see them, same as `notion-handoff-<slug>.md`)
+- `notion-review.md` (stable alias for the latest review; gitignored like `notion-handoff.md`)
 - `.notion/reviews/<iid>-<slug>.review.md`
 
-In the new chat, attach `@notion-review-<iid>.md`. The agent should explain the problem, what the MR changed, and what to watch, then wait for your questions. After you agree a comment is needed:
+To also start `cursor-agent` and let it post findings (no new chat, no pasted MR link):
+
+```bash
+GITLAB_REVIEW_ON_ASSIGN="true"
+GITLAB_REVIEW_AUTO_DISPATCH="true"
+GITLAB_REVIEW_AUTO_PUBLISH="true"
+```
+
+The agent follows `scripts/notion-review-auto-agent-rules.md`. It posts only real issues through `notion-auto review-comment` and never approves or merges. Dispatch runs in the background so ticket polling is not blocked. Logs go to `.notion/reviews/<iid>.agent.log`.
+
+Manual (no waiting for assign):
+
+```bash
+notion-auto review --mr-iid 42          # handoff only; discuss, then review-comment
+notion-auto review-run --mr-iid 42      # write handoff + dispatch agent + post findings
+```
+
+Human-in-the-loop posting after a discuss-first review:
 
 ```bash
 notion-auto review-comment --mr-iid 42 --body "Consider handling the empty list before mapping."
@@ -297,11 +315,7 @@ notion-auto review-comment --mr-iid 42 --body "Consider handling the empty list 
 # notion-auto review-comment --mr-iid 42 --path src/file.ts --line 18 --body "..."
 ```
 
-Manual (no waiting for assign):
-
-```bash
-notion-auto review --mr-iid 42
-```
+This uses the same GitLab poll as ticket intake. A webhook is not required.
 
 ## Merge To Notion Status Sync
 
@@ -333,8 +347,10 @@ Per workspace, the toolkit writes:
 - `.notion/intake/assets/<page-id>/*` (downloaded ticket attachments when enabled)
 - `.notion/handoffs/<branch-flat>.agent-handoff.md`
 - `notion-handoff.md` (stable alias that always points to the latest handoff)
-- `notion-review-<iid>.md` and `notion-review.md` (review handoffs when assigned on GitLab)
+- `notion-handoff-<slug>.md` (named root alias; deleted by the agent after consume so remaining files = unconsumed tickets)
+- `notion-review-<iid>.md` and `notion-review.md` (review handoffs when assigned on GitLab; deleted after consume / successful `review-run`)
 - `.notion/reviews/<iid>-<slug>.review.md`
+- `.notion/reviews/<iid>.agent.log` (when auto-dispatch runs in the background)
 - `.notion/runtime.json`
 - `.notion/bridge-state.json`
 - `.notion/worktree-map.json` and `.notion/active-tickets.md` (when worktree mode is enabled)
@@ -345,11 +361,15 @@ On each intake, if Sprint is empty, the toolkit assigns the current sprint (`NOT
 
 When `NOTION_CLEANUP_ON_STATUS=true`, bridge automatically removes a ticket's intake files/assets when status becomes `NOTION_CLEANUP_STATUS` (default: `Fix Deployed Dev`).
 
-In Cursor Agent chat, attach the stable alias:
+In Cursor Agent chat, attach the stable or named alias:
 
 ```text
 @notion-handoff.md
+# or
+@notion-handoff-<slug>.md
 ```
+
+After the agent has read the handoff and built context, it deletes that root alias. Archives under `.notion/handoffs/` stay. Remaining root `notion-handoff-*.md` / `notion-review-*.md` files mean work that has not been opened yet.
 
 ## Manual MCP Handoff (One-Step Trigger)
 

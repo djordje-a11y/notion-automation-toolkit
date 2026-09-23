@@ -76,6 +76,8 @@ const DEFAULT_GITLAB_MERGED_STATUS = 'Fix Deployed Dev';
 const DEFAULT_GITLAB_SYNC_INTERVAL_SECONDS = 30;
 const DEFAULT_GITLAB_REVIEW_ON_ASSIGN = false;
 const DEFAULT_GITLAB_REVIEW_SKIP_OWN = true;
+const DEFAULT_GITLAB_REVIEW_AUTO_DISPATCH = false;
+const DEFAULT_GITLAB_REVIEW_AUTO_PUBLISH = false;
 const DEFAULT_REVIEW_STATE_FILE = '.notion/review-state.json';
 // Ordered earliest -> latest. Merge sync only moves tickets forward to the merged status.
 const DEFAULT_GITLAB_MERGE_SYNC_STATUS_ORDER = [
@@ -297,6 +299,8 @@ async function loadNotionEnvValues(args) {
     'GITLAB_REVIEW_ON_ASSIGN',
     'GITLAB_REVIEW_USER_ID',
     'GITLAB_REVIEW_SKIP_OWN',
+    'GITLAB_REVIEW_AUTO_DISPATCH',
+    'GITLAB_REVIEW_AUTO_PUBLISH',
     'NOTION_ENV_FILE',
   ];
 
@@ -654,6 +658,26 @@ function buildRuntimeConfig(args, envValues) {
           String(DEFAULT_GITLAB_REVIEW_SKIP_OWN),
       ),
       DEFAULT_GITLAB_REVIEW_SKIP_OWN,
+    ),
+    gitlabReviewAutoDispatch: parseBoolean(
+      getOptionalArg(
+        args,
+        'gitlab-review-auto-dispatch',
+        process.env.GITLAB_REVIEW_AUTO_DISPATCH ||
+          envValues.GITLAB_REVIEW_AUTO_DISPATCH ||
+          String(DEFAULT_GITLAB_REVIEW_AUTO_DISPATCH),
+      ),
+      DEFAULT_GITLAB_REVIEW_AUTO_DISPATCH,
+    ),
+    gitlabReviewAutoPublish: parseBoolean(
+      getOptionalArg(
+        args,
+        'gitlab-review-auto-publish',
+        process.env.GITLAB_REVIEW_AUTO_PUBLISH ||
+          envValues.GITLAB_REVIEW_AUTO_PUBLISH ||
+          String(DEFAULT_GITLAB_REVIEW_AUTO_PUBLISH),
+      ),
+      DEFAULT_GITLAB_REVIEW_AUTO_PUBLISH,
     ),
     gitlabReviewStateFile: resolvePathFromWorkspace(
       rootWorkspace,
@@ -1329,11 +1353,15 @@ async function resolveGitlabReviewerUserId(config) {
 
 async function writeReviewHandoffForMr(config, mrIid) {
   const script = path.resolve(TOOLKIT_ROOT, 'scripts/notion-mr-review.js');
-  const result = await runCommandCapture(
-    'node',
-    [script, '--workspace', config.rootWorkspace, '--mr-iid', String(mrIid)],
-    { cwd: config.rootWorkspace, env: process.env },
-  );
+  const args = ['--workspace', config.rootWorkspace, '--mr-iid', String(mrIid)];
+  if (config.gitlabReviewAutoDispatch) {
+    args.push('--dispatch', '--background', 'true');
+    args.push('--auto-publish', config.gitlabReviewAutoPublish ? 'true' : 'false');
+  }
+  const result = await runCommandCapture('node', [script, ...args], {
+    cwd: config.rootWorkspace,
+    env: process.env,
+  });
   const stdout = String(result.stdout || '').trim();
   const stderr = String(result.stderr || '').trim();
   if (stdout) print(stdout, colors.dim);
@@ -1443,7 +1471,11 @@ async function syncAssignedMergeRequestReviews(config) {
       await writeReviewHandoffForMr(config, iid);
       written += 1;
       print(
-        `Review handoff ready for MR !${iid}: attach @notion-review-${iid}.md in a new Cursor chat.`,
+        config.gitlabReviewAutoDispatch
+          ? `Review agent dispatched for MR !${iid}${
+              config.gitlabReviewAutoPublish ? ' (auto-publish on)' : ' (handoff only, no auto comments)'
+            }.`
+          : `Review handoff ready for MR !${iid}: attach @notion-review-${iid}.md in a new Cursor chat.`,
         colors.green,
       );
     } catch (error) {
@@ -1930,6 +1962,8 @@ function printUsage() {
   print('  --gitlab-status-sync-on-merge true|false');
   print('  --gitlab-sync-interval-seconds 30');
   print('  --gitlab-review-on-assign true|false');
+  print('  --gitlab-review-auto-dispatch true|false');
+  print('  --gitlab-review-auto-publish true|false');
   print('  --dry-run true|false');
   print('');
 }
@@ -2282,9 +2316,12 @@ async function main(argv = process.argv) {
   }
   if (config.gitlabReviewOnAssign) {
     print(
-      `review-on-assign: enabled (writes @notion-review-<iid>.md; no auto comments) interval=${Math.round(
-        config.gitlabSyncIntervalMs / 1000,
-      )}s`,
+      `review-on-assign: enabled interval=${Math.round(config.gitlabSyncIntervalMs / 1000)}s` +
+        (config.gitlabReviewAutoDispatch
+          ? config.gitlabReviewAutoPublish
+            ? ' (dispatch + auto-publish comments)'
+            : ' (dispatch agent, comments stay manual)'
+          : ' (writes @notion-review-<iid>.md; no auto comments)'),
       colors.dim,
     );
     if (!config.gitlabToken || !config.gitlabProjectRef) {

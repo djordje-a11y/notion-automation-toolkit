@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * GitLab MR review helper (human-in-the-loop).
+ * GitLab MR review helper.
  *
  * - review: fetch MR + diff and write @notion-review-<iid>.md (same flow as ticket handoff)
- * - review-comment: post a GitLab note only after the user asks
+ * - review-comment: post a GitLab note
+ * - review-run / --dispatch: write the handoff and run cursor-agent unattended
  */
 
 import process from 'process';
@@ -21,7 +22,13 @@ const DEFAULT_REVIEW_ALIAS_FILE = 'notion-review.md';
 const DEFAULT_REVIEW_STATE_FILE = '.notion/review-state.json';
 const DEFAULT_ACTIVE_REVIEWS_FILE = '.notion/active-reviews.md';
 const DEFAULT_RULES_FILE = path.resolve(TOOLKIT_ROOT, 'scripts/notion-review-agent-rules.md');
+const DEFAULT_AUTO_RULES_FILE = path.resolve(TOOLKIT_ROOT, 'scripts/notion-review-auto-agent-rules.md');
 const DEFAULT_SKIP_OWN = true;
+const DEFAULT_AGENT_MODEL = 'auto';
+const DEFAULT_UNSET_CURSOR_API_KEY = true;
+const DEFAULT_AGENT_HEADLESS_PRINT = true;
+const DEFAULT_REVIEW_AGENT_COMMAND =
+  '$HOME/.local/bin/cursor-agent --force --print --trust --approve-mcps --workspace "$PWD" "Read $GITLAB_REVIEW_HANDOFF_FILE and complete the unattended GitLab review. Follow the auto-review rules in that file. Post each real finding with notion-auto review-comment. If notion-auto is missing, use node $GITLAB_REVIEW_TOOLKIT_BIN review-comment. Do not wait for a human. Do not approve or merge."';
 const MAX_DIFF_CHARS = 60_000;
 const MAX_FILE_DIFF_LINES = 200;
 const MAX_FILES = 30;
@@ -31,11 +38,24 @@ const SKIP_DIFF_NAME_RE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|
 const DEFAULT_REVIEW_RULES = [
   'GitLab MR review rules (human-in-the-loop):',
   '- This file is read-once input for a review chat. Do not edit the review `.md`.',
+  '- After this review handoff is consumed (read + context built), delete the root alias: `notion-review-<iid>.md` and `notion-review.md` if it points at the same MR. Leave `.notion/reviews/` archives alone.',
   '- First explain: the problem/feature, what the MR changed, and what to pay attention to.',
   '- Then wait for the user to ask questions. Discuss before proposing comments.',
   '- Do NOT post to GitLab until the user explicitly asks.',
   '- Only comment when there is a real issue or a clearly better approach.',
   '- When asked to post: `notion-auto review-comment --mr-iid <iid> --body "<comment>"`',
+  '- Optional inline: add `--path <file> --line <n>`.',
+].join('\n');
+
+const DEFAULT_AUTO_REVIEW_RULES = [
+  'GitLab MR review rules (unattended auto-review):',
+  '- This file is read-once input. Do not edit the review `.md`.',
+  '- After the review is finished (findings posted, or none to post), delete the root alias: `notion-review-<iid>.md` and `notion-review.md` if it points at the same MR. Leave `.notion/reviews/` archives alone.',
+  '- Complete the review now. Do not wait for a human.',
+  '- Do NOT approve, request changes, merge, or rubber-stamp.',
+  '- Only post real issues or a clearly better approach.',
+  '- Skip findings already covered by existing comments.',
+  '- Post with `notion-auto review-comment --mr-iid <iid> --body "<comment>"`.',
   '- Optional inline: add `--path <file> --line <n>`.',
 ].join('\n');
 
@@ -208,6 +228,16 @@ async function loadLocalEnvValues(args, workspace, rootWorkspace) {
     'GITLAB_REMOTE',
     'GITLAB_REVIEW_USER_ID',
     'GITLAB_REVIEW_SKIP_OWN',
+    'GITLAB_REVIEW_AUTO_DISPATCH',
+    'GITLAB_REVIEW_AUTO_PUBLISH',
+    'GITLAB_REVIEW_AGENT_COMMAND',
+    'GITLAB_REVIEW_AGENT_MODEL',
+    'GITLAB_REVIEW_RULES_FILE',
+    'GITLAB_REVIEW_AUTO_RULES_FILE',
+    'NOTION_AGENT_COMMAND',
+    'NOTION_AGENT_MODEL',
+    'NOTION_AGENT_UNSET_CURSOR_API_KEY',
+    'NOTION_AGENT_HEADLESS_PRINT',
     'NOTION_AGENT_GIT_REMOTE',
   ];
   const values = {};
@@ -383,13 +413,72 @@ function formatExistingNotes(notes) {
     .join('\n');
 }
 
-async function readRulesText(rulesFile) {
+async function readRulesText(rulesFile, fallback = DEFAULT_REVIEW_RULES) {
   try {
     const text = await fs.readFile(rulesFile, 'utf8');
-    return String(text || '').trim() || DEFAULT_REVIEW_RULES;
+    return String(text || '').trim() || fallback;
   } catch {
-    return DEFAULT_REVIEW_RULES;
+    return fallback;
   }
+}
+
+function commandStartsWithCursorAgent(raw) {
+  const trimmed = String(raw || '').trim();
+  if (/^cursor\s+agent(?:\s|$)/i.test(trimmed)) return true;
+  if (/^\$HOME\/\.local\/bin\/cursor-agent(?:\s|$)/.test(trimmed)) return true;
+  const firstToken = trimmed.match(/^[^\s]+/);
+  return Boolean(firstToken && /cursor-agent$/i.test(firstToken[0]));
+}
+
+function injectCursorAgentFlagIfNeeded(command, flagName, flagValue) {
+  const raw = String(command || '').trim();
+  const value = String(flagValue || '').trim();
+  if (!raw || !value) return raw;
+  if (!commandStartsWithCursorAgent(raw)) return raw;
+  const flagPattern = new RegExp(`(^|\\s)--${flagName}(\\s|=)`);
+  if (flagPattern.test(raw)) return raw;
+  const safeValue = value.replace(/"/g, '\\"');
+  const firstSpace = raw.search(/\s/);
+  if (firstSpace === -1) return `${raw} --${flagName} "${safeValue}"`;
+  const bin = raw.slice(0, firstSpace);
+  const rest = raw.slice(firstSpace + 1).trimStart();
+  return `${bin} --${flagName} "${safeValue}" ${rest}`;
+}
+
+function injectBooleanCursorAgentFlagIfNeeded(command, flagName) {
+  const raw = String(command || '').trim();
+  if (!raw || !commandStartsWithCursorAgent(raw)) return raw;
+  const flagPattern = new RegExp(`(^|\\s)--${flagName}(\\s|=|$)`);
+  if (flagPattern.test(raw)) return raw;
+  const firstSpace = raw.search(/\s/);
+  if (firstSpace === -1) return `${raw} --${flagName}`;
+  const bin = raw.slice(0, firstSpace);
+  const rest = raw.slice(firstSpace + 1).trimStart();
+  return `${bin} --${flagName} ${rest}`;
+}
+
+function injectModelFlagIfNeeded(command, model) {
+  const normalized = normalize(model);
+  if (!normalized || normalized === 'inherit') return String(command || '').trim();
+  return injectCursorAgentFlagIfNeeded(command, 'model', model);
+}
+
+function adaptCursorAgentCommandForHeadless(command, headless) {
+  let raw = String(command || '').trim();
+  if (headless) {
+    return injectBooleanCursorAgentFlagIfNeeded(raw, 'print');
+  }
+  const before = raw;
+  raw = raw.replace(/\s--print\b/g, '');
+  raw = raw.replace(/\s--trust\b/g, '');
+  raw = raw.replace(/\s--stream-partial-output\b/g, '');
+  return raw.replace(/\s{2,}/g, ' ').trim() || before;
+}
+
+function buildCursorAgentChildEnv(config, extra = {}) {
+  const env = { ...process.env, ...extra };
+  if (config.unsetCursorApiKey) delete env.CURSOR_API_KEY;
+  return env;
 }
 
 function ensureTrailingNewline(text) {
@@ -416,6 +505,8 @@ function buildReviewHandoff({
   archivePath,
   aliasPath,
   workspace,
+  autoPublish,
+  toolkitBin,
 }) {
   const title = String(mr?.title || `MR !${iid}`).trim();
   const url = String(mr?.web_url || '').trim();
@@ -425,9 +516,57 @@ function buildReviewHandoff({
   const sha = String(mr?.sha || mr?.diff_refs?.head_sha || '').trim();
   const description = String(mr?.description || '').trim() || '_No MR description._';
   const notionUrl = extractNotionUrl(description);
+  const commentCmd = `notion-auto review-comment --workspace "${workspace}" --mr-iid ${iid}`;
+  const fallbackCmd = `node "${toolkitBin}" review-comment --workspace "${workspace}" --mr-iid ${iid}`;
+
+  const intro = autoPublish
+    ? [
+        'Unattended review. Do not mix this with a ticket implementation chat.',
+        '',
+        'HARD STOP:',
+        '1) Read the MR description, existing comments, and diff below.',
+        '2) Find only real issues or a clearly better approach.',
+        '3) Post each finding now with `notion-auto review-comment`. Do not wait.',
+        '4) Do not approve, merge, or post praise / LGTM.',
+        '5) When finished (posted or nothing to post), delete root aliases `notion-review-<iid>.md` and `notion-review.md` if it points at this MR. Leave `.notion/reviews/` archives alone.',
+      ]
+    : [
+        'Open a **new** Cursor Agent chat and attach this file (`@` it). Do not mix this review with a ticket implementation chat.',
+        '',
+        'HARD STOP:',
+        '1) Read the MR description and diff below.',
+        '2) Explain the problem/feature, what the MR changed, and what to pay attention to.',
+        '3) Wait for the user. Discuss questions back and forth.',
+        '4) Do not post a GitLab comment unless the user explicitly asks.',
+        '5) After this handoff is consumed (read + context built), delete root aliases `notion-review-<iid>.md` and `notion-review.md` if it points at this MR. Leave `.notion/reviews/` archives alone. Remaining root `notion-review-*.md` files mean unconsumed reviews.',
+      ];
+
+  const postingSection = autoPublish
+    ? [
+        '## Post findings now',
+        '',
+        'Auto-publish is authorized. One finding per command:',
+        '',
+        '```bash',
+        `${commentCmd} --body "<finding>"`,
+        `${commentCmd} --path src/file.ts --line 42 --body "<finding>"`,
+        `# fallback: ${fallbackCmd} --body "<finding>"`,
+        '```',
+        '',
+      ]
+    : [
+        '## When the user asks to post a comment',
+        '',
+        '```bash',
+        `${commentCmd} --body "<agreed comment>"`,
+        '# optional inline:',
+        `# ${commentCmd} --path src/file.ts --line 42 --body "<agreed comment>"`,
+        '```',
+        '',
+      ];
 
   return [
-    '# Cursor IDE Agent — GitLab MR review',
+    autoPublish ? '# Cursor Agent — unattended GitLab MR review' : '# Cursor IDE Agent — GitLab MR review',
     '',
     `- **MR:** !${iid} ${title}`,
     `- **URL:** ${url || '(none)'}`,
@@ -437,14 +576,9 @@ function buildReviewHandoff({
     `- **This file:** \`${aliasPath}\``,
     `- **Archive:** \`${archivePath}\``,
     notionUrl ? `- **Notion ticket:** ${notionUrl}` : '- **Notion ticket:** _(not found in MR description)_',
+    `- **Mode:** ${autoPublish ? 'unattended auto-publish' : 'human-in-the-loop'}`,
     '',
-    'Open a **new** Cursor Agent chat and attach this file (`@` it). Do not mix this review with a ticket implementation chat.',
-    '',
-    'HARD STOP:',
-    '1) Read the MR description and diff below.',
-    '2) Explain the problem/feature, what the MR changed, and what to pay attention to.',
-    '3) Wait for the user. Discuss questions back and forth.',
-    '4) Do not post a GitLab comment unless the user explicitly asks.',
+    ...intro,
     '',
     '---',
     '',
@@ -464,14 +598,7 @@ function buildReviewHandoff({
     '',
     diffsText,
     '',
-    '## When the user asks to post a comment',
-    '',
-    '```bash',
-    `notion-auto review-comment --workspace "${workspace}" --mr-iid ${iid} --body "<agreed comment>"`,
-    '# optional inline:',
-    `# notion-auto review-comment --workspace "${workspace}" --mr-iid ${iid} --path src/file.ts --line 42 --body "<agreed comment>"`,
-    '```',
-    '',
+    ...postingSection,
   ].join('\n');
 }
 
@@ -522,7 +649,12 @@ async function writeActiveReviewsIndex(rootWorkspace, state) {
 
 function printUsage(mode) {
   print('');
-  print(mode === 'comment' ? 'notion review-comment' : 'notion review', colors.cyan);
+  const titles = {
+    comment: 'notion review-comment',
+    run: 'notion review-run',
+    review: 'notion review',
+  };
+  print(titles[mode] || titles.review, colors.cyan);
   print('');
   if (mode === 'comment') {
     print('Usage:');
@@ -535,6 +667,20 @@ function printUsage(mode) {
     print('  --path <file> --line <n>   (inline discussion when possible)');
     print('  --dry-run true|false');
     print('');
+  } else if (mode === 'run') {
+    print('Usage:');
+    print('  notion-auto review-run --mr-iid <id>');
+    print('  notion-auto review-run --mr-url https://gitlab.com/group/proj/-/merge_requests/42');
+    print('');
+    print('Writes a review handoff and starts cursor-agent. With --auto-publish the agent posts findings.');
+    print('');
+    print('Options:');
+    print('  --workspace <path>');
+    print('  --mr-iid <id> | --mr-url <url>');
+    print('  --auto-publish true|false');
+    print('  --background true|false');
+    print('  --dry-run true|false');
+    print('');
   } else {
     print('Usage:');
     print('  notion-auto review --mr-iid <id>');
@@ -542,6 +688,7 @@ function printUsage(mode) {
     print('');
     print('Writes a review handoff. Open a new Cursor chat and attach @notion-review-<iid>.md');
     print('Do not post GitLab comments until the user asks (then use review-comment).');
+    print('Use review-run to dispatch cursor-agent automatically.');
     print('');
     print('Options:');
     print('  --workspace <path>');
@@ -627,7 +774,10 @@ async function writeReviewHandoff(config, projectRef, iid) {
       config,
       `/projects/${projectRef}/merge_requests/${iid}/notes?sort=asc&per_page=50`,
     ).catch(() => []),
-    readRulesText(config.rulesFile),
+    readRulesText(
+      config.autoPublish ? config.autoRulesFile : config.rulesFile,
+      config.autoPublish ? DEFAULT_AUTO_REVIEW_RULES : DEFAULT_REVIEW_RULES,
+    ),
   ]);
 
   const title = String(mr?.title || `MR !${iid}`).trim();
@@ -648,6 +798,8 @@ async function writeReviewHandoff(config, projectRef, iid) {
     archivePath: repoRelative(config.rootWorkspace, archivePath),
     aliasPath: aliasName,
     workspace: config.rootWorkspace,
+    autoPublish: config.autoPublish,
+    toolkitBin: path.resolve(TOOLKIT_ROOT, 'bin/notion-auto.js'),
   });
 
   if (config.dryRun) {
@@ -754,18 +906,179 @@ async function resolveGitlabConfig(args, workspace) {
       ),
       DEFAULT_SKIP_OWN,
     ),
-    rulesFile: getOptionalArg(args, 'rules-file', DEFAULT_RULES_FILE),
+    rulesFile: getOptionalArg(
+      args,
+      'rules-file',
+      process.env.GITLAB_REVIEW_RULES_FILE || loadedEnv.values.GITLAB_REVIEW_RULES_FILE || DEFAULT_RULES_FILE,
+    ),
+    autoRulesFile: getOptionalArg(
+      args,
+      'auto-rules-file',
+      process.env.GITLAB_REVIEW_AUTO_RULES_FILE ||
+        loadedEnv.values.GITLAB_REVIEW_AUTO_RULES_FILE ||
+        DEFAULT_AUTO_RULES_FILE,
+    ),
+    dispatch: parseBoolean(getOptionalArg(args, 'dispatch', 'false'), false) || Boolean(args.dispatch),
+    autoPublishRaw: getOptionalArg(
+      args,
+      'auto-publish',
+      process.env.GITLAB_REVIEW_AUTO_PUBLISH || loadedEnv.values.GITLAB_REVIEW_AUTO_PUBLISH || '',
+    ),
+    background: parseBoolean(getOptionalArg(args, 'background', 'false'), false),
+    agentCommand: getOptionalArg(
+      args,
+      'agent-command',
+      process.env.GITLAB_REVIEW_AGENT_COMMAND ||
+        loadedEnv.values.GITLAB_REVIEW_AGENT_COMMAND ||
+        DEFAULT_REVIEW_AGENT_COMMAND,
+    ),
+    agentModel: getOptionalArg(
+      args,
+      'agent-model',
+      process.env.GITLAB_REVIEW_AGENT_MODEL ||
+        loadedEnv.values.GITLAB_REVIEW_AGENT_MODEL ||
+        process.env.NOTION_AGENT_MODEL ||
+        loadedEnv.values.NOTION_AGENT_MODEL ||
+        DEFAULT_AGENT_MODEL,
+    ),
+    unsetCursorApiKey: parseBoolean(
+      getOptionalArg(
+        args,
+        'unset-cursor-api-key',
+        process.env.NOTION_AGENT_UNSET_CURSOR_API_KEY ||
+          loadedEnv.values.NOTION_AGENT_UNSET_CURSOR_API_KEY ||
+          String(DEFAULT_UNSET_CURSOR_API_KEY),
+      ),
+      DEFAULT_UNSET_CURSOR_API_KEY,
+    ),
+    agentHeadlessPrint: parseBoolean(
+      getOptionalArg(
+        args,
+        'agent-headless-print',
+        process.env.NOTION_AGENT_HEADLESS_PRINT ||
+          loadedEnv.values.NOTION_AGENT_HEADLESS_PRINT ||
+          String(DEFAULT_AGENT_HEADLESS_PRINT),
+      ),
+      DEFAULT_AGENT_HEADLESS_PRINT,
+    ),
     dryRun: parseBoolean(getOptionalArg(args, 'dry-run', 'false'), false),
     force: parseBoolean(getOptionalArg(args, 'force', 'false'), false),
     remoteUrl,
   };
 }
 
+async function resolveCursorAgentCommand(configuredCommand) {
+  let command = String(configuredCommand || '').trim();
+  if (!command.includes('$HOME/.local/bin/cursor-agent')) return command;
+  const homeBin = path.join(process.env.HOME || '', '.local/bin/cursor-agent');
+  try {
+    await fs.access(homeBin);
+    return command;
+  } catch {
+    print(
+      'cursor-agent not found at $HOME/.local/bin/cursor-agent; using cursor-agent from PATH.',
+      colors.yellow,
+    );
+    return command.replace(/\$HOME\/\.local\/bin\/cursor-agent/g, 'cursor-agent');
+  }
+}
+
+async function dispatchReviewAgent(config, files) {
+  const configuredCommand = await resolveCursorAgentCommand(config.agentCommand);
+  if (!configuredCommand) {
+    fail(
+      'Dispatch requested but GITLAB_REVIEW_AGENT_COMMAND is empty. Set it in .notion.local or pass --agent-command.',
+    );
+  }
+
+  let command = injectModelFlagIfNeeded(configuredCommand, config.agentModel);
+  command = adaptCursorAgentCommandForHeadless(command, config.agentHeadlessPrint);
+  command = injectBooleanCursorAgentFlagIfNeeded(command, 'force');
+  command = injectBooleanCursorAgentFlagIfNeeded(command, 'trust');
+
+  const env = buildCursorAgentChildEnv(config, {
+    GITLAB_REVIEW_HANDOFF_FILE: files.aliasFile,
+    GITLAB_REVIEW_ALIAS_FILE: files.aliasFile,
+    GITLAB_REVIEW_ARCHIVE_FILE: repoRelative(config.rootWorkspace, files.archivePath),
+    GITLAB_REVIEW_MR_IID: String(files.iid),
+    GITLAB_REVIEW_MR_URL: String(files.url || ''),
+    GITLAB_REVIEW_TOOLKIT_BIN: path.resolve(TOOLKIT_ROOT, 'bin/notion-auto.js'),
+    GITLAB_REVIEW_AUTO_PUBLISH: config.autoPublish ? 'true' : 'false',
+  });
+
+  if (config.unsetCursorApiKey && String(process.env.CURSOR_API_KEY || '').trim()) {
+    print(
+      'NOTION_AGENT_UNSET_CURSOR_API_KEY: omitting CURSOR_API_KEY for cursor-agent (use login session).',
+      colors.dim,
+    );
+  }
+  if (config.agentModel) print(`Agent model: ${config.agentModel}`, colors.dim);
+  print(`Dispatching review agent: ${command}`, colors.cyan);
+
+  if (config.background) {
+    const logPath = path.join(config.rootWorkspace, DEFAULT_REVIEW_DIR, `${files.iid}.agent.log`);
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    const logFile = await fs.open(logPath, 'a');
+    const child = spawn('bash', ['-lc', command], {
+      cwd: config.rootWorkspace,
+      env,
+      detached: true,
+      stdio: ['ignore', logFile.fd, logFile.fd],
+    });
+    child.unref();
+    await logFile.close();
+    print(`Review agent started in background. Log: ${repoRelative(config.rootWorkspace, logPath)}`, colors.green);
+    return { background: true, logPath, pid: child.pid };
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn('bash', ['-lc', command], {
+      cwd: config.rootWorkspace,
+      env,
+      stdio: 'inherit',
+    });
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`Review agent terminated by signal: ${signal}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`Review agent failed with exit code: ${code}`));
+        return;
+      }
+      resolve();
+    });
+    child.on('error', reject);
+  });
+  return { background: false };
+}
+
+async function discardRootReviewAliases(rootWorkspace, iid, aliasFile) {
+  const targets = new Set();
+  const named = String(aliasFile || '').trim() || `notion-review-${iid}.md`;
+  targets.add(path.isAbsolute(named) ? named : path.join(rootWorkspace, named));
+  targets.add(path.join(rootWorkspace, DEFAULT_REVIEW_ALIAS_FILE));
+
+  const removed = [];
+  for (const target of targets) {
+    try {
+      await fs.unlink(target);
+      removed.push(path.relative(rootWorkspace, target).split(path.sep).join('/') || path.basename(target));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        print(`Could not remove ${target}: ${error.message || error}`, colors.yellow);
+      }
+    }
+  }
+  return removed;
+}
+
 async function main(argv = process.argv) {
   const args = parseArgs(argv);
   const postComment = Boolean(args['post-comment'] || args._[0] === 'comment');
+  const dispatchRequested = Boolean(args.dispatch || args._[0] === 'run');
   if (args.help || args.h) {
-    printUsage(postComment ? 'comment' : 'review');
+    printUsage(postComment ? 'comment' : dispatchRequested ? 'run' : 'review');
     return 0;
   }
 
@@ -793,14 +1106,43 @@ async function main(argv = process.argv) {
     return 0;
   }
 
+  if (dispatchRequested) config.dispatch = true;
+  if (config.dispatch) {
+    config.autoPublish = config.autoPublishRaw
+      ? parseBoolean(config.autoPublishRaw, true)
+      : true;
+  } else {
+    config.autoPublish = false;
+  }
+
   const files = await writeReviewHandoff(config, projectRef, mrRef.iid);
   print(`MR !${files.iid}: ${files.title}`, colors.green);
   if (files.url) print(files.url, colors.dim);
-  if (!files.dryRun) {
-    print(`Review handoff (@ this file in a new Cursor chat): ${files.aliasFile}`, colors.green);
-    print(`Stable alias: ${DEFAULT_REVIEW_ALIAS_FILE}`, colors.dim);
-    print('Do not post GitLab comments until the user asks. Then use notion-auto review-comment.', colors.yellow);
+  if (files.dryRun) return 0;
+
+  print(`Review handoff: ${files.aliasFile}`, colors.green);
+  print(`Stable alias: ${DEFAULT_REVIEW_ALIAS_FILE}`, colors.dim);
+
+  if (config.dispatch) {
+    if (!config.autoPublish) {
+      print('Dispatching without auto-publish. The agent should not post GitLab comments.', colors.yellow);
+    }
+    const dispatchResult = await dispatchReviewAgent(config, files);
+    if (!dispatchResult?.background) {
+      const removed = await discardRootReviewAliases(
+        config.rootWorkspace,
+        files.iid,
+        files.aliasFile,
+      );
+      if (removed.length > 0) {
+        print(`Consumed review aliases removed: ${removed.join(', ')}`, colors.dim);
+      }
+    }
+    return 0;
   }
+
+  print('Do not post GitLab comments until the user asks. Then use notion-auto review-comment.', colors.yellow);
+  print('Or run `notion-auto review-run` to dispatch cursor-agent automatically.', colors.dim);
   return 0;
 }
 

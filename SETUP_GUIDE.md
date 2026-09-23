@@ -240,7 +240,9 @@ Edit `/path/to/your/repo/.notion.local`.
 | `GITLAB_REVIEWER_IDS` | Reviewer IDs required by `notion-auto push` |
 | `GITLAB_PROJECT_ID` | Auto-inferred from git remote if omitted |
 | `GITLAB_AUTO_MERGE` | `notion-auto done` default: `true` |
-| `GITLAB_REVIEW_ON_ASSIGN` | Write `@notion-review-<iid>.md` when you are assigned (default `false`; no auto-comments) |
+| `GITLAB_REVIEW_ON_ASSIGN` | Write `@notion-review-<iid>.md` when you are assigned (default `false`) |
+| `GITLAB_REVIEW_AUTO_DISPATCH` | After the handoff, start `cursor-agent` in the background (default `false`) |
+| `GITLAB_REVIEW_AUTO_PUBLISH` | Allow the dispatched agent to post findings with `review-comment` (default `false`) |
 
 See `.notion.local.example` for all options with inline comments.
 
@@ -359,7 +361,8 @@ Then:
 3. Writes:
    - `.notion/handoffs/<branch-flat>.agent-handoff.md`
    - `notion-handoff.md` (stable alias)
-4. In Cursor chat attach: `@notion-handoff.md`
+4. In Cursor chat attach: `@notion-handoff.md` (or `@notion-handoff-<slug>.md`)
+5. After the agent reads it and builds context, the root alias is deleted. Remaining root `notion-handoff-*.md` / `notion-review-*.md` files = unconsumed work.
 
 ### Manual intake test (recommended during setup)
 

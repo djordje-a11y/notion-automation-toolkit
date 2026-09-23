@@ -6,6 +6,7 @@ Ticket intake rules:
 - Provide a deterministic validation plan: focused regression first, then confidence checks.
 - Always propose a clear branch name based on task slug (no ticket id in branch name unless explicitly requested).
 - After reading the handoff `.md` and confirming the prepared branch, rename the current chat to match the branch name without the configured prefix (example: `dev/notion/fix-login-timeout` -> `fix-login-timeout`).
+- After the root handoff alias is consumed (read + context built), delete that root file immediately: `notion-handoff-<slug>.md` and/or `notion-handoff.md`. Do not edit its contents. Leave `.notion/handoffs/` archives alone. Remaining root `notion-handoff-*.md` files mean unconsumed tickets.
 - If ticket data is insufficient, list exact missing inputs needed to proceed.
 
 Sprint / backlog rules (mandatory):

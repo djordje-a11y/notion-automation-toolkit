@@ -25,8 +25,9 @@ const REQUIRED_EXCLUDES = [
   '.notion.local',
   'notion-handoff.md',
   'notion-review.md',
-  'notion-review-*.md',
 ];
+// Named aliases must stay visible to Cursor @ attach, same as notion-handoff-<slug>.md.
+const STALE_EXCLUDES = ['notion-review-*.md'];
 
 function print(message, color = '') {
   // eslint-disable-next-line no-console
@@ -145,19 +146,31 @@ async function main(argv = process.argv) {
   await fs.mkdir(path.resolve(workspace, '.notion', 'reviews'), { recursive: true });
 
   const existing = await readTextIfExists(excludeAbsolute);
-  const lines = existing
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const missing = REQUIRED_EXCLUDES.filter((entry) => !lines.includes(entry));
+  const keptLines = existing.split(/\r?\n/).filter((line) => !STALE_EXCLUDES.includes(line.trim()));
+  while (keptLines.length > 0 && keptLines[keptLines.length - 1] === '') {
+    keptLines.pop();
+  }
+  const present = new Set(keptLines.map((line) => line.trim()).filter(Boolean));
+  const missing = REQUIRED_EXCLUDES.filter((entry) => !present.has(entry));
+  const removedStale = STALE_EXCLUDES.filter((entry) =>
+    existing.split(/\r?\n/).some((line) => line.trim() === entry),
+  );
+  const nextText = `${[...keptLines, ...missing].join('\n')}${
+    keptLines.length + missing.length > 0 ? '\n' : ''
+  }`;
 
-  if (missing.length > 0) {
-    const needsLeadingNewline = existing.length > 0 && !existing.endsWith('\n');
-    const prefix = needsLeadingNewline ? '\n' : '';
-    const appended = `${prefix}${missing.join('\n')}\n`;
+  if (missing.length > 0 || removedStale.length > 0) {
     await fs.mkdir(path.dirname(excludeAbsolute), { recursive: true });
-    await fs.appendFile(excludeAbsolute, appended, 'utf8');
-    print(`Updated ${excludeAbsolute} with: ${missing.join(', ')}`, colors.green);
+    await fs.writeFile(excludeAbsolute, nextText, 'utf8');
+    if (missing.length > 0) {
+      print(`Updated ${excludeAbsolute} with: ${missing.join(', ')}`, colors.green);
+    }
+    if (removedStale.length > 0) {
+      print(
+        `Removed stale ignore entries so Cursor can @-attach named review files: ${removedStale.join(', ')}`,
+        colors.green,
+      );
+    }
   } else {
     print(`${excludeAbsolute} already contains required ignore entries.`, colors.dim);
   }
